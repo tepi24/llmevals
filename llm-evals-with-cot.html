@@ -1,0 +1,1374 @@
+
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LLM Evals — Verifier & Judge Demo</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400;1,600&family=Nunito:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0;}
+    body{background:linear-gradient(160deg,#eef2ff 0%,#f0fdfa 50%,#e0f2fe 100%);min-height:100vh;font-family:'Nunito',sans-serif;}
+    @keyframes fadeUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+    @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+    @keyframes slideIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+    .fu{animation:fadeUp .5s ease both}
+    .fu1{animation:fadeUp .5s .08s ease both}
+    .fu2{animation:fadeUp .5s .16s ease both}
+    .fu3{animation:fadeUp .5s .24s ease both}
+    .pulse{animation:pulse 1.4s ease infinite}
+    .spin{animation:spin .9s linear infinite;display:inline-block}
+    .slide{animation:slideIn .35s ease both}
+    pre{background:#1e293b;color:#e2e8f0;padding:16px 18px;border-radius:10px;font-size:12px;overflow-x:auto;line-height:1.75;font-family:'Courier New',monospace;white-space:pre-wrap;word-break:break-word}
+    .kw{color:#93c5fd}.str{color:#86efac}.cm{color:#94a3b8;font-style:italic}.fn{color:#fca5a5}.num{color:#fcd34d}
+    ::-webkit-scrollbar{width:6px;height:6px}
+    ::-webkit-scrollbar-track{background:#f1f5f9;border-radius:4px}
+    ::-webkit-scrollbar-thumb{background:#c7d2fe;border-radius:4px}
+    input[type=text],input[type=password]{outline:none;}
+    input[type=text]:focus,input[type=password]:focus{border-color:#6366f1 !important;box-shadow:0 0 0 3px rgba(99,102,241,.12);}
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+/* ═══════════════════════════════════════════════════════════════
+   API HELPERS
+═══════════════════════════════════════════════════════════════ */
+
+function safeParseJSON(text) {
+  if (!text) throw new Error("Empty response from LLM");
+  try { return JSON.parse(text.trim()); } catch {}
+  const stripped = text.replace(/```json\s*/gi,"").replace(/```/g,"").trim();
+  try { return JSON.parse(stripped); } catch {}
+  const match = text.match(/\{[\s\S]*\}/);
+  if (match) { try { return JSON.parse(match[0]); } catch {} }
+  throw new Error("Could not parse JSON from LLM response. Raw:\n" + text.slice(0,300));
+}
+
+async function callOpenRouter(apiKey, prompt, model) {
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": window.location.href,
+      "X-Title": "LLM Evals Demo"
+    },
+    body: JSON.stringify({
+      model: model || "google/gemini-2.0-flash-exp:free",
+      messages: [{ role:"user", content: prompt }],
+      temperature: 0
+    })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(`OpenRouter error ${res.status}: ${err.error?.message || res.statusText}`);
+  }
+  const data = await res.json();
+  return data.choices[0].message.content;
+}
+
+async function callGemini(apiKey, prompt, model) {
+  const m = model || "gemini-1.5-flash";
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0 }
+      })
+    }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(`Gemini error ${res.status}: ${err.error?.message || res.statusText}`);
+  }
+  const data = await res.json();
+  if (data.error) throw new Error(`Gemini: ${data.error.message}`);
+  return data.candidates[0].content.parts[0].text;
+}
+
+async function callOllama(baseUrl, model, prompt) {
+  const url = (baseUrl || "http://localhost:11434").replace(/\/$/, "");
+  const res = await fetch(`${url}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: model || "llama3.2",
+      messages: [{ role:"user", content: prompt }],
+      stream: false,
+      options: { temperature: 0 }
+    })
+  });
+  if (!res.ok) throw new Error(`Ollama error ${res.status}: ${res.statusText}. Is Ollama running with OLLAMA_ORIGINS='*'?`);
+  const data = await res.json();
+  return data.message?.content || data.response || "";
+}
+
+async function callLLM(settings, prompt) {
+  const { provider, apiKey, model, ollamaUrl, ollamaModel } = settings;
+  if (provider === "openrouter") return callOpenRouter(apiKey, prompt, model);
+  if (provider === "gemini")     return callGemini(apiKey, prompt, model);
+  if (provider === "ollama")     return callOllama(ollamaUrl, ollamaModel, prompt);
+  throw new Error("Unknown provider");
+}
+
+function isLiveMode(settings) {
+  if (settings.provider === "ollama") return true;
+  return settings.apiKey.trim().length > 0;
+}
+
+/* Normalise judge output — LLMs return scores as array OR object */
+function normalizeJudgeResult(parsed, rubric) {
+  let scores;
+  if (Array.isArray(parsed.scores)) {
+    scores = parsed.scores.map(Number);
+  } else if (parsed.scores && typeof parsed.scores === "object") {
+    scores = rubric.map(r => {
+      const key = Object.keys(parsed.scores).find(k => k.toLowerCase() === r.toLowerCase()) || r;
+      return Number(parsed.scores[key]) || 3;
+    });
+  } else {
+    scores = rubric.map(() => 3);
+  }
+  const avg = scores.reduce((a,b)=>a+b,0)/scores.length;
+  const overall = Number(parsed.overall) || parseFloat(avg.toFixed(2));
+  const verdict = parsed.verdict ||
+    (overall >= 4 ? "Pass" : overall >= 2.5 ? "Borderline" : "Fail");
+  return {
+    scores,
+    overall,
+    reasoning: parsed.reasoning || parsed.explanation || "No reasoning provided.",
+    verdict
+  };
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   JUDGE & VERIFIER PROMPT BUILDERS
+═══════════════════════════════════════════════════════════════ */
+
+function buildJudgePrompt(taskPrompt, response, rubric) {
+  const criteria = rubric.map(r => `  - ${r}: 1 (very poor) to 5 (excellent)`).join("\n");
+  return `You are an expert evaluator. Score the model response below.
+
+TASK GIVEN TO THE MODEL:
+${taskPrompt}
+
+MODEL RESPONSE:
+${response}
+
+RUBRIC — score each criterion independently on a 1–5 integer scale:
+${criteria}
+
+Rules:
+- Score each criterion independently — do not let strengths in one inflate others
+- Response length alone must NOT increase scores
+- If the response contains factual errors, Accuracy MUST be 1 or 2 regardless of other qualities
+
+Return ONLY valid JSON, no other text:
+{
+  "scores": {${rubric.map(r=>`"${r}": <int>`).join(", ")}},
+  "overall": <float>,
+  "reasoning": "<2–3 sentences on key strengths and weaknesses>",
+  "verdict": "Pass" | "Borderline" | "Fail"
+}`;
+}
+
+function buildVerifierPrompt(claim, domain, extra) {
+  const guidance = {
+    factual: "Check against established facts and scientific consensus. State what the truth actually is.",
+    mathematical: "Work through the mathematics step by step before giving a verdict.",
+    code: "Trace through the code logic for each test case before giving a verdict.",
+    general: "Apply careful reasoning before giving a verdict.",
+  }[domain] || "Apply careful reasoning.";
+
+  return `You are a ${domain || "general"} verification assistant.
+
+CLAIM TO VERIFY:
+${claim}
+${extra ? `\nCONTEXT:\n${extra}` : ""}
+
+GUIDANCE: ${guidance}
+
+Return ONLY valid JSON:
+{
+  "verdict": "PASS" | "FAIL" | "UNCERTAIN",
+  "confidence": <integer 0–100>,
+  "reasoning": "<concise explanation>",
+  "notes": "<optional: edge cases, caveats>"
+}`;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   DATA
+═══════════════════════════════════════════════════════════════ */
+
+const TASKS = [
+  {
+    id:"gradient", label:"Explain gradient descent",
+    prompt:"Explain what gradient descent is to a complete beginner.",
+    rubric:["Accuracy","Clarity","Helpfulness","Conciseness"],
+    responses:[
+      { id:"good",     label:"Response A", badge:"Good",
+        text:"Imagine you're blindfolded in hilly terrain, trying to find the lowest valley. You can't see far, so you feel the ground around your feet and take a small step in whichever direction slopes downhill. Repeat until you stop going lower — that's gradient descent!\n\nIn ML, we want model parameters that minimise our errors (called 'loss'). The gradient tells us which direction to nudge each parameter to reduce that loss. We take small steps repeatedly until we converge.\n\nKey insight: smaller steps = more precise but slower; bigger steps = faster but risk overshooting the minimum." },
+      { id:"mediocre", label:"Response B", badge:"OK",
+        text:"Gradient descent is an iterative optimisation algorithm that minimises a differentiable function by moving in the direction of steepest descent. For a loss function J(θ), the update rule is:\n\n    θ = θ − α ∇J(θ)\n\nwhere α is the learning rate and ∇J(θ) is the gradient of the loss with respect to parameters θ. This is repeated until convergence." },
+      { id:"bad",      label:"Response C", badge:"Poor",
+        text:"Gradient descent is how neural networks learn by climbing up the gradient to reach the maximum point. The algorithm increases the loss function using backpropagation. By going up the gradient, the model finds better weights. You repeat this until the loss is at its highest, which means the model is fully trained." }
+    ],
+    judgements:{
+      good:      { scores:[5,5,5,4], overall:4.75, verdict:"Pass",
+        reasoning:"Excellent analogy (blindfolded hiker) that is both concrete and accurate. The three-part structure — analogy → ML application → key insight — builds understanding progressively. Technically correct throughout. Minor deduction on conciseness, but length serves comprehension. Fully addresses the 'beginner' requirement." },
+      mediocre:  { scores:[5,2,2,5], overall:3.5,  verdict:"Borderline",
+        reasoning:"Technically precise — the formula is correct. However, heavy notation (∇J(θ)) assumes calculus knowledge a beginner lacks. No analogy, no intuition, no example. 'Convergence' is also unexplained. Concise, but fails the 'beginner' requirement." },
+      bad:       { scores:[1,2,1,4], overall:2.0,  verdict:"Fail",
+        reasoning:"Critical factual errors: gradient descent MINIMISES (not maximises) loss, and we move DOWN (not up) the gradient. 'Highest loss = fully trained' is the exact opposite of correct. These errors would directly mislead a learner. The misinformation makes this response harmful for the stated purpose." }
+    }
+  },
+  {
+    id:"climate", label:"Causes of climate change",
+    prompt:"What are the main human-caused drivers of climate change?",
+    rubric:["Accuracy","Completeness","Clarity","Factual Grounding"],
+    responses:[
+      { id:"good",     label:"Response A", badge:"Good",
+        text:"The four main human-caused drivers are:\n\n1. Burning fossil fuels — the largest contributor, releasing CO₂ and methane for electricity, heat, and transport.\n\n2. Deforestation — trees absorb CO₂; clearing them releases stored carbon and shrinks the planet's carbon sink.\n\n3. Agriculture — livestock produce methane; rice paddies and fertilisers release nitrous oxide, both potent greenhouse gases.\n\n4. Industrial processes — cement, steel, and chemical production emit significant CO₂ and other gases.\n\nAll of these increase greenhouse gas concentrations, which trap heat in the atmosphere." },
+      { id:"mediocre", label:"Response B", badge:"OK",
+        text:"Climate change is driven by greenhouse gas emissions from humans. We emit CO2 and other gases from industry and transportation mostly. The main gas is CO2 but methane also matters. This has been going on since the Industrial Revolution. Most scientists agree this is causing the planet to warm." },
+      { id:"bad",      label:"Response C", badge:"Poor",
+        text:"Climate change has many causes including the sun getting hotter, natural volcanic activity, and ocean cycles. Human activity like driving cars contributes a little, but scientists actually debate whether humans are the main cause. The climate has always changed naturally throughout history, so it's hard to separate human effects from natural variation." }
+    ],
+    judgements:{
+      good:      { scores:[5,5,5,5], overall:5.0,  verdict:"Pass",
+        reasoning:"Comprehensive and accurate. Correctly identifies all four major categories with specific mechanisms. Distinguishes CO₂ from methane and nitrous oxide sources. The closing sentence grounds the list in the greenhouse effect mechanism. Well-structured and readable." },
+      mediocre:  { scores:[4,2,3,3], overall:3.0,  verdict:"Borderline",
+        reasoning:"Broadly accurate but superficial. Deforestation and agriculture (~25% of emissions) are completely omitted. Reads as a collection of true statements rather than a coherent explanation. Adequate for a brief acknowledgement, inadequate for genuine understanding." },
+      bad:       { scores:[1,1,3,1], overall:1.5,  verdict:"Fail",
+        reasoning:"Factually misleading. The sun is not getting hotter in a way that explains recent warming. 'Scientists debate the main cause' misrepresents the 97%+ scientific consensus. 'A little bit' grossly undersells human contribution. This could reinforce climate misinformation." }
+    }
+  }
+];
+
+const VERIFIER_EXAMPLES = [
+  { id:"factual", type:"Factual", icon:"📋", domain:"factual",
+    color:"#6366f1", pale:"#e0e7ff", border:"#a5b4fc",
+    claim:"The Great Wall of China is visible from space with the naked eye.",
+    extra:"Consider: the wall is ~5–9 m wide, low Earth orbit is ~400 km, documented astronaut testimony from NASA and Chinese astronaut Yang Liwei.",
+    simResult:{ verdict:"FAIL", confidence:98,
+      reasoning:"Contradicts documented evidence from NASA and multiple astronauts. The Wall is ~5–9 m wide — too narrow for the naked eye at 400 km altitude. This is a well-documented myth.",
+      notes:"Yang Liwei (China's first astronaut) confirmed he could not see it." }
+  },
+  { id:"math", type:"Mathematical", icon:"🔢", domain:"mathematical",
+    color:"#0d9488", pale:"#f0fdfa", border:"#5eead4",
+    claim:"The derivative of f(x) = x³ with respect to x is 3x².",
+    extra:"Apply the power rule: d/dx[xⁿ] = n·xⁿ⁻¹",
+    simResult:{ verdict:"PASS", confidence:100,
+      reasoning:"Power rule: d/dx[x³] = 3·x³⁻¹ = 3x². This is a fundamental calculus result with no ambiguity.",
+      notes:"Correct for all real x." }
+  },
+  { id:"code", type:"Code", icon:"💻", domain:"code",
+    color:"#8b5cf6", pale:"#f5f3ff", border:"#c4b5fd",
+    claim:"def is_prime(n):\n    if n < 2: return False\n    for i in range(2, n):\n        if n % i == 0: return False\n    return True",
+    extra:"Test cases: is_prime(1)→False, is_prime(2)→True, is_prime(4)→False, is_prime(17)→True",
+    simResult:{ verdict:"PASS", confidence:100,
+      reasoning:"Logically correct for all provided test cases. Handles edge cases (n<2) correctly. Functionally sound.",
+      notes:"Correctness: ✓ but O(n) — could optimise to O(√n) by iterating range(2, int(n**0.5)+1)." }
+  }
+];
+
+const CODE_SNIPPETS = {
+  judge:`<span class="cm"># ── LLM-as-a-Judge ─────────────────────────────────────────────</span>
+<span class="kw">import</span> anthropic, json, re
+
+client = anthropic.Anthropic()
+
+<span class="kw">def</span> <span class="fn">build_judge_prompt</span>(task, response, rubric):
+    criteria = <span class="str">"\n"</span>.join(<span class="str">f"  - {r}: 1–5"</span> <span class="kw">for</span> r <span class="kw">in</span> rubric)
+    <span class="kw">return</span> <span class="str">f"""You are an expert evaluator. Score the response below.
+
+TASK: {task}
+RESPONSE: {response}
+RUBRIC:
+{criteria}
+
+Rules:
+- Score each criterion independently
+- Length alone must NOT increase scores
+- Factual errors → Accuracy must be 1 or 2
+
+Return ONLY valid JSON:
+{{"scores": {{{", ".join(f'"{r}": <int>' for r in rubric)}}},
+  "overall": <float>, "reasoning": "<text>", "verdict": "Pass"|"Borderline"|"Fail"}}"""</span>
+
+<span class="kw">def</span> <span class="fn">judge</span>(task, response, rubric):
+    msg = client.messages.create(
+        model=<span class="str">"claude-opus-4-8"</span>,
+        max_tokens=<span class="num">512</span>,
+        temperature=<span class="num">0</span>,         <span class="cm"># always 0 for determinism</span>
+        messages=[{<span class="str">"role"</span>:<span class="str">"user"</span>, <span class="str">"content"</span>: build_judge_prompt(task, response, rubric)}]
+    )
+    <span class="kw">return</span> json.loads(msg.content[<span class="num">0</span>].text)`,
+
+  pairwise:`<span class="cm"># ── Pairwise Comparison ─────────────────────────────────────────</span>
+<span class="kw">def</span> <span class="fn">pairwise_judge</span>(task, a, b):
+    prompt = <span class="str">f"""Compare two responses to the same task.
+TASK: {task}
+RESPONSE A: {a}
+RESPONSE B: {b}
+Which is better? Do NOT prefer longer responses automatically.
+Return JSON: {{"winner": "A"|"B"|"tie", "confidence": "high"|"medium"|"low",
+               "key_difference": "<one sentence>"}}"""</span>
+    msg = client.messages.create(model=<span class="str">"claude-opus-4-8"</span>, max_tokens=<span class="num">200</span>,
+                                  temperature=<span class="num">0</span>, messages=[{<span class="str">"role"</span>:<span class="str">"user"</span>, <span class="str">"content"</span>: prompt}])
+    <span class="kw">return</span> json.loads(msg.content[<span class="num">0</span>].text)
+
+<span class="kw">def</span> <span class="fn">robust_pairwise</span>(task, a, b, n=<span class="num">3</span>):
+    <span class="cm"># Run A→B and B→A each n times to cancel position bias</span>
+    wins = {<span class="str">"A"</span>:<span class="num">0</span>, <span class="str">"B"</span>:<span class="num">0</span>, <span class="str">"tie"</span>:<span class="num">0</span>}
+    <span class="kw">for</span> _ <span class="kw">in</span> range(n):
+        ab = pairwise_judge(task, a, b)
+        wins[ab[<span class="str">"winner"</span>]] += <span class="num">1</span>
+        ba = pairwise_judge(task, b, a)   <span class="cm"># flipped order</span>
+        flipped = {<span class="str">"A"</span>:<span class="str">"B"</span>,<span class="str">"B"</span>:<span class="str">"A"</span>,<span class="str">"tie"</span>:<span class="str">"tie"</span>}[ba[<span class="str">"winner"</span>]]
+        wins[flipped] += <span class="num">1</span>
+    winner = max(wins, key=wins.get)
+    <span class="kw">return</span> {<span class="str">"winner"</span>: winner, <span class="str">"win_rates"</span>: {k: v/(n*<span class="num">2</span>) <span class="kw">for</span> k,v <span class="kw">in</span> wins.items()}}`,
+
+  verifier:`<span class="cm"># ── Verifier ─────────────────────────────────────────────────────</span>
+<span class="kw">def</span> <span class="fn">verify</span>(claim, domain=<span class="str">"general"</span>, reference=<span class="kw">None</span>):
+    guidance = {
+        <span class="str">"factual"</span>:      <span class="str">"Check against established facts and consensus."</span>,
+        <span class="str">"mathematical"</span>: <span class="str">"Work through the steps before giving a verdict."</span>,
+        <span class="str">"code"</span>:         <span class="str">"Trace the logic for each test case."</span>,
+    }.get(domain, <span class="str">"Apply careful reasoning."</span>)
+
+    ref_block = <span class="str">f"\nCONTEXT: {reference}"</span> <span class="kw">if</span> reference <span class="kw">else</span> <span class="str">""</span>
+    prompt = <span class="str">f"""Verify the following claim.
+CLAIM: {claim}{ref_block}
+GUIDANCE: {guidance}
+Return ONLY JSON: {{"verdict":"PASS"|"FAIL"|"UNCERTAIN",
+                    "confidence":<int 0-100>, "reasoning":"<text>"}}"""</span>
+
+    msg = client.messages.create(
+        model=<span class="str">"claude-haiku-4-5-20251001"</span>,  <span class="cm"># cheaper for binary checks</span>
+        max_tokens=<span class="num">256</span>, temperature=<span class="num">0</span>,
+        messages=[{<span class="str">"role"</span>:<span class="str">"user"</span>, <span class="str">"content"</span>: prompt}]
+    )
+    <span class="kw">return</span> json.loads(msg.content[<span class="num">0</span>].text)`,
+
+  passk:`<span class="cm"># ── pass@k — unbiased estimator (Chen et al., Codex/HumanEval) ───</span>
+<span class="kw">from</span> math <span class="kw">import</span> comb
+
+<span class="kw">def</span> <span class="fn">pass_at_k</span>(n, c, k):
+    <span class="cm"># n = samples drawn, c = #correct (per verifier), k = budget</span>
+    <span class="kw">if</span> n - c < k: <span class="kw">return</span> <span class="num">1.0</span>
+    <span class="kw">return</span> <span class="num">1.0</span> - comb(n - c, k) / comb(n, k)
+
+<span class="kw">def</span> <span class="fn">estimate</span>(problems, model, verifier, n=<span class="num">20</span>, k=<span class="num">5</span>):
+    <span class="cm"># sample n per problem (temperature > 0!), verify each, average</span>
+    total = <span class="num">0.0</span>
+    <span class="kw">for</span> p <span class="kw">in</span> problems:
+        samples = [model.sample(p, temperature=<span class="num">0.8</span>) <span class="kw">for</span> _ <span class="kw">in</span> range(n)]
+        c = sum(verifier(p, s) <span class="kw">for</span> s <span class="kw">in</span> samples)   <span class="cm"># execution / exact-match / judge</span>
+        total += pass_at_k(n, c, k)
+    <span class="kw">return</span> total / len(problems)
+
+<span class="cm"># maj@k (self-consistency): vote instead of oracle-pick — no verifier needed</span>
+<span class="kw">from</span> collections <span class="kw">import</span> Counter
+<span class="kw">def</span> <span class="fn">self_consistency</span>(model, p, k=<span class="num">8</span>):
+    answers = [extract_answer(model.sample(p, temperature=<span class="num">0.8</span>)) <span class="kw">for</span> _ <span class="kw">in</span> range(k)]
+    <span class="kw">return</span> Counter(answers).most_common(<span class="num">1</span>)[<span class="num">0</span>][<span class="num">0</span>]   <span class="cm"># modal answer</span>
+
+<span class="cm"># Best-of-N: rerank by a verifier / reward model, keep the top sample</span>
+<span class="kw">def</span> <span class="fn">best_of_n</span>(model, scorer, p, n=<span class="num">8</span>):
+    samples = [model.sample(p, temperature=<span class="num">0.8</span>) <span class="kw">for</span> _ <span class="kw">in</span> range(n)]
+    <span class="kw">return</span> max(samples, key=<span class="kw">lambda</span> s: scorer(p, s))
+
+<span class="cm"># NOTE: pass@k needs n >> k for a low-variance estimate.</span>
+<span class="cm"># Temperature is part of the metric — report it. Too low ⇒ pass@k ≈ pass@1.</span>`,
+
+  tips:`<span class="cm"># ── Common Pitfalls & Best Practices ────────────────────────────</span>
+
+<span class="cm"># 1. POSITION BIAS — judge prefers whichever response it reads first</span>
+<span class="cm">#    Fix: run A→B and B→A, take majority (robust_pairwise above)</span>
+
+<span class="cm"># 2. VERBOSITY BIAS — judge favours longer responses</span>
+<span class="cm">#    Fix: add "length alone must NOT increase scores" to every prompt</span>
+
+<span class="cm"># 3. SELF-PREFERENCE — a model judges its own outputs leniently</span>
+<span class="cm">#    Fix: use a different (ideally stronger) model as the judge</span>
+
+<span class="cm"># 4. PROMPT SENSITIVITY — small wording changes shift scores</span>
+<span class="cm">#    Fix: version-control your judge prompt; never change it mid-run</span>
+
+<span class="cm"># 5. ROBUST JSON PARSING</span>
+<span class="kw">def</span> <span class="fn">safe_parse</span>(text):
+    <span class="kw">try</span>: <span class="kw">return</span> json.loads(text.strip())
+    <span class="kw">except</span>: <span class="kw">pass</span>
+    cleaned = re.sub(<span class="str">r'\`\`\`json?\s*|\`\`\`'</span>, <span class="str">''</span>, text).strip()
+    <span class="kw">try</span>: <span class="kw">return</span> json.loads(cleaned)
+    <span class="kw">except</span>: <span class="kw">pass</span>
+    m = re.search(<span class="str">r'\{.*\}'</span>, text, re.DOTALL)
+    <span class="kw">if</span> m: <span class="kw">return</span> json.loads(m.group())
+    <span class="kw">raise</span> ValueError(<span class="str">"No JSON in judge output"</span>)
+
+<span class="cm"># 6. ALWAYS temperature=0 for deterministic, reproducible evals</span>
+<span class="cm"># 7. CALIBRATE: build a human-labelled golden set first</span>
+<span class="cm">#    Measure judge-human agreement before trusting judge at scale</span>`
+};
+
+/* ═══════════════════════════════════════════════════════════════
+   COMPONENTS
+═══════════════════════════════════════════════════════════════ */
+
+function ScoreBar({ score, color }) {
+  const [w, setW] = useState(0);
+  useEffect(() => { const t = setTimeout(() => setW((score/5)*100), 80); return ()=>clearTimeout(t); }, [score]);
+  return (
+    <div style={{background:"#e2e8f0",borderRadius:99,height:7,overflow:"hidden",flex:1}}>
+      <div style={{width:`${w}%`,height:"100%",background:color,borderRadius:99,transition:"width .8s cubic-bezier(.4,0,.2,1)"}}/>
+    </div>
+  );
+}
+
+function VerdictBadge({ verdict }) {
+  const map = {
+    Pass:      {bg:"#f0fdf4",border:"#86efac",text:"#16a34a",icon:"✓"},
+    Borderline:{bg:"#fffbeb",border:"#fcd34d",text:"#b45309",icon:"~"},
+    Fail:      {bg:"#fff5f7",border:"#fda4af",text:"#be123c",icon:"✗"},
+    PASS:      {bg:"#f0fdf4",border:"#86efac",text:"#16a34a",icon:"✓"},
+    FAIL:      {bg:"#fff5f7",border:"#fda4af",text:"#be123c",icon:"✗"},
+    UNCERTAIN: {bg:"#fffbeb",border:"#fcd34d",text:"#b45309",icon:"?"},
+  };
+  const s = map[verdict] || map.Borderline;
+  return (
+    <span style={{display:"inline-flex",alignItems:"center",gap:5,background:s.bg,
+      border:`1.5px solid ${s.border}`,borderRadius:20,padding:"4px 12px",
+      fontFamily:"'Nunito'",fontSize:12,fontWeight:700,color:s.text}}>
+      {s.icon} {verdict}
+    </span>
+  );
+}
+
+/* ── Settings Panel ── */
+function SettingsPanel({ settings, onSave, onClose }) {
+  const [local, setLocal] = useState({ ...settings });
+
+  const providers = [
+    { id:"openrouter", label:"OpenRouter", hint:"openrouter.ai → Keys", modelPlaceholder:"google/gemini-2.0-flash-exp:free" },
+    { id:"gemini",     label:"Gemini API", hint:"aistudio.google.com → Get API key", modelPlaceholder:"gemini-1.5-flash" },
+    { id:"ollama",     label:"Ollama (local)", hint:"Start: OLLAMA_ORIGINS='*' ollama serve", modelPlaceholder:"llama3.2" },
+  ];
+  const prov = providers.find(p => p.id === local.provider);
+  const isOllama = local.provider === "ollama";
+
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(15,23,42,.45)",zIndex:100,
+      display:"flex",alignItems:"center",justifyContent:"center",padding:20}}
+      onClick={e => e.target===e.currentTarget && onClose()}>
+      <div className="slide" style={{background:"white",borderRadius:20,padding:"28px 26px",
+        width:"100%",maxWidth:460,boxShadow:"0 24px 64px rgba(99,102,241,.18)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
+          <div style={{fontFamily:"'Cormorant Garamond'",fontStyle:"italic",fontSize:20,fontWeight:600,color:"#1e293b"}}>
+            API Settings
+          </div>
+          <button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",
+            color:"#94a3b8",fontSize:18,lineHeight:1}}>✕</button>
+        </div>
+
+        {/* Provider selector */}
+        <div style={{marginBottom:16}}>
+          <div style={{fontFamily:"'Nunito'",fontSize:10,fontWeight:700,textTransform:"uppercase",
+            letterSpacing:"0.08em",color:"#6366f1",marginBottom:8}}>Provider</div>
+          <div style={{display:"flex",gap:6}}>
+            {providers.map(p => (
+              <button key={p.id} onClick={() => setLocal(l=>({...l,provider:p.id}))} style={{
+                flex:1,border:`${local.provider===p.id?2:1.5}px solid ${local.provider===p.id?"#a5b4fc":"#e2e8f0"}`,
+                background:local.provider===p.id?"#e0e7ff":"white",borderRadius:8,
+                padding:"7px 6px",cursor:"pointer",fontFamily:"'Nunito'",fontSize:11,fontWeight:600,
+                color:local.provider===p.id?"#6366f1":"#64748b",transition:"all .15s"}}>
+                {p.label}
+              </button>
+            ))}
+          </div>
+          <div style={{marginTop:6,fontFamily:"'Nunito'",fontSize:11,color:"#94a3b8"}}>
+            {prov?.hint}
+          </div>
+        </div>
+
+        {/* API key (not for Ollama) */}
+        {!isOllama && (
+          <div style={{marginBottom:14}}>
+            <div style={{fontFamily:"'Nunito'",fontSize:10,fontWeight:700,textTransform:"uppercase",
+              letterSpacing:"0.08em",color:"#6366f1",marginBottom:6}}>API Key</div>
+            <input type="password" placeholder="Paste your API key here…"
+              value={local.apiKey}
+              onChange={e => setLocal(l=>({...l,apiKey:e.target.value}))}
+              style={{width:"100%",padding:"9px 12px",border:"1.5px solid #e2e8f0",borderRadius:8,
+                fontFamily:"'Nunito'",fontSize:13,color:"#1e293b",transition:"border-color .15s"}}/>
+            <div style={{marginTop:4,fontFamily:"'Nunito'",fontSize:11,color:"#94a3b8"}}>
+              Stored in memory only — never sent anywhere except the provider.
+            </div>
+          </div>
+        )}
+
+        {/* Model */}
+        <div style={{marginBottom:14}}>
+          <div style={{fontFamily:"'Nunito'",fontSize:10,fontWeight:700,textTransform:"uppercase",
+            letterSpacing:"0.08em",color:"#6366f1",marginBottom:6}}>
+            {isOllama ? "Ollama Model" : "Model (optional)"}
+          </div>
+          <input type="text"
+            placeholder={prov?.modelPlaceholder}
+            value={isOllama ? local.ollamaModel : local.model}
+            onChange={e => setLocal(l => isOllama
+              ? {...l, ollamaModel: e.target.value}
+              : {...l, model: e.target.value})}
+            style={{width:"100%",padding:"9px 12px",border:"1.5px solid #e2e8f0",borderRadius:8,
+              fontFamily:"'Nunito'",fontSize:13,color:"#1e293b",transition:"border-color .15s"}}/>
+        </div>
+
+        {/* Ollama URL */}
+        {isOllama && (
+          <div style={{marginBottom:14}}>
+            <div style={{fontFamily:"'Nunito'",fontSize:10,fontWeight:700,textTransform:"uppercase",
+              letterSpacing:"0.08em",color:"#6366f1",marginBottom:6}}>Ollama URL</div>
+            <input type="text"
+              placeholder="http://localhost:11434"
+              value={local.ollamaUrl}
+              onChange={e => setLocal(l=>({...l,ollamaUrl:e.target.value}))}
+              style={{width:"100%",padding:"9px 12px",border:"1.5px solid #e2e8f0",borderRadius:8,
+                fontFamily:"'Nunito'",fontSize:13,color:"#1e293b",transition:"border-color .15s"}}/>
+            <div style={{marginTop:4,fontFamily:"'Nunito'",fontSize:11,color:"#94a3b8"}}>
+              Start Ollama with: <code style={{background:"#f1f5f9",padding:"1px 5px",borderRadius:4}}>OLLAMA_ORIGINS='*' ollama serve</code>
+            </div>
+          </div>
+        )}
+
+        <button onClick={() => { onSave(local); onClose(); }} style={{
+          width:"100%",background:"linear-gradient(135deg,#6366f1,#0d9488)",border:"none",
+          borderRadius:10,padding:"11px",fontFamily:"'Nunito'",fontSize:13,fontWeight:700,
+          color:"white",cursor:"pointer",marginTop:4}}>
+          Save & Close
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ── Overview Tab ── */
+function OverviewTab() {
+  const cards = [
+    { title:"LLM-as-a-Judge", color:"#6366f1", pale:"#e0e7ff", border:"#a5b4fc", icon:"⚖️",
+      flow:["Task + Model Response","↓","Judge Prompt (rubric)","↓","Score + Reasoning"],
+      desc:"Use an LLM to evaluate another LLM's output against a rubric. Returns numeric scores and natural-language reasoning.",
+      uses:["Rating response quality (1–5)","Comparing A vs B outputs (pairwise)","Checking style, tone, safety"],
+      strength:"Flexible — works on any text output, easy to extend",
+      watch:"Position bias, verbosity bias, self-preference" },
+    { title:"Verifier", color:"#0d9488", pale:"#f0fdfa", border:"#5eead4", icon:"✅",
+      flow:["Claim / Code / Output","↓","Verification Prompt","↓","PASS / FAIL + Confidence"],
+      desc:"Use an LLM (or deterministic check) to verify whether a specific claim or output is factually or logically correct.",
+      uses:["Factual claim checking","Math / code correctness","Constraint satisfaction"],
+      strength:"Binary signal — easy to aggregate into pass-rate metrics",
+      watch:"Hallucinations in the verifier itself — calibrate against ground truth" },
+  ];
+
+  return (
+    <div>
+      <div style={{fontFamily:"'Cormorant Garamond'",fontStyle:"italic",fontSize:15,
+        color:"#64748b",marginBottom:20,lineHeight:1.7}}>
+        LLM Evals replace human annotation at scale. Two core patterns power most production eval pipelines:
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:22}}>
+        {cards.map(c => (
+          <div key={c.title} style={{background:"#fff",border:`1.5px solid ${c.border}`,borderRadius:14,padding:"16px"}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
+              <div style={{width:30,height:30,borderRadius:8,background:c.pale,border:`1.5px solid ${c.border}`,
+                display:"flex",alignItems:"center",justifyContent:"center",fontSize:15}}>{c.icon}</div>
+              <div style={{fontFamily:"'Cormorant Garamond'",fontStyle:"italic",fontSize:18,fontWeight:600,color:c.color}}>
+                {c.title}
+              </div>
+            </div>
+            <div style={{background:c.pale,borderRadius:10,padding:"8px 12px",marginBottom:12,border:`1px solid ${c.border}`}}>
+              {c.flow.map((s,i) => (
+                <div key={i} style={{fontFamily:"'Nunito'",fontSize:11,fontWeight:s==="↓"?400:600,
+                  color:s==="↓"?"#94a3b8":c.color,textAlign:"center",lineHeight:1.6,padding:s==="↓"?"0":"2px 0"}}>{s}</div>
+              ))}
+            </div>
+            <div style={{fontFamily:"'Nunito'",fontSize:12,color:"#475569",lineHeight:1.6,marginBottom:10}}>{c.desc}</div>
+            <div style={{marginBottom:8}}>
+              <div style={{fontFamily:"'Nunito'",fontSize:10,fontWeight:700,textTransform:"uppercase",
+                letterSpacing:"0.07em",color:c.color,marginBottom:4}}>Common uses</div>
+              {c.uses.map(u => (
+                <div key={u} style={{display:"flex",gap:5,alignItems:"flex-start",marginBottom:3}}>
+                  <span style={{width:4,height:4,borderRadius:"50%",background:c.color,flexShrink:0,marginTop:5}}/>
+                  <span style={{fontFamily:"'Nunito'",fontSize:11,color:"#64748b"}}>{u}</span>
+                </div>
+              ))}
+            </div>
+            <div style={{background:"#f0fdf4",borderRadius:8,padding:"7px 10px",marginBottom:5,borderLeft:`3px solid ${c.color}`}}>
+              <span style={{fontFamily:"'Nunito'",fontSize:10,fontWeight:700,color:"#16a34a",textTransform:"uppercase",letterSpacing:"0.06em"}}>✓ Strength  </span>
+              <span style={{fontFamily:"'Nunito'",fontSize:11,color:"#475569"}}>{c.strength}</span>
+            </div>
+            <div style={{background:"#fff5f7",borderRadius:8,padding:"7px 10px",borderLeft:"3px solid #fda4af"}}>
+              <span style={{fontFamily:"'Nunito'",fontSize:10,fontWeight:700,color:"#be123c",textTransform:"uppercase",letterSpacing:"0.06em"}}>⚠ Watch  </span>
+              <span style={{fontFamily:"'Nunito'",fontSize:11,color:"#475569"}}>{c.watch}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div style={{background:"#f8fafc",border:"1.5px solid #e2e8f0",borderRadius:12,padding:"14px 18px"}}>
+        <div style={{fontFamily:"'Nunito'",fontSize:10,fontWeight:700,textTransform:"uppercase",
+          letterSpacing:"0.1em",color:"#94a3b8",marginBottom:10}}>How they fit in a real eval pipeline</div>
+        <div style={{display:"flex",alignItems:"center",gap:0,flexWrap:"wrap",rowGap:6}}>
+          {["Model\nOutput","→","Verifier\n(factual/code)","→","Judge\n(quality)","→","Aggregate\nMetrics","→","Dashboard\n& Alerts"].map((s,i) => (
+            s==="→"
+              ? <div key={i} style={{color:"#94a3b8",fontSize:16,padding:"0 4px"}}>→</div>
+              : <div key={i} style={{background:"white",border:"1.5px solid #e2e8f0",borderRadius:8,
+                  padding:"6px 10px",textAlign:"center",fontFamily:"'Nunito'",fontSize:11,
+                  fontWeight:600,color:"#475569",lineHeight:1.4,whiteSpace:"pre-line"}}>{s}</div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Judge Tab ── */
+function JudgeTab({ settings }) {
+  const [taskId,      setTaskId]      = useState("gradient");
+  const [responseId,  setResponseId]  = useState(null);
+  const [judging,     setJudging]     = useState(false);
+  const [result,      setResult]      = useState(null);
+  const [error,       setError]       = useState(null);
+  const [showPrompt,  setShowPrompt]  = useState(false);
+  const [liveMode,    setLiveMode]    = useState(false);
+  const resultRef = useRef(null);
+
+  const task = TASKS.find(t => t.id === taskId);
+  const live = isLiveMode(settings);
+
+  function handleTaskChange(id) {
+    setTaskId(id); setResponseId(null); setResult(null); setError(null); setShowPrompt(false);
+  }
+
+  async function handleJudge() {
+    if (!responseId) return;
+    setJudging(true); setResult(null); setError(null);
+    const selectedResponse = task.responses.find(r => r.id === responseId);
+
+    try {
+      if (live) {
+        setLiveMode(true);
+        const prompt = buildJudgePrompt(task.prompt, selectedResponse.text, task.rubric);
+        const raw = await callLLM(settings, prompt);
+        const parsed = safeParseJSON(raw);
+        setResult(normalizeJudgeResult(parsed, task.rubric));
+      } else {
+        await new Promise(r => setTimeout(r, 1800));
+        setResult(task.judgements[responseId]);
+      }
+    } catch(err) {
+      setError(err.message);
+    } finally {
+      setJudging(false);
+      setTimeout(() => resultRef.current?.scrollIntoView({behavior:"smooth",block:"nearest"}), 100);
+    }
+  }
+
+  const selectedResponse = task.responses.find(r => r.id === responseId);
+  const qualityColor = {good:"#16a34a", mediocre:"#b45309", bad:"#be123c"};
+  const qualityPale  = {good:"#f0fdf4", mediocre:"#fffbeb", bad:"#fff5f7"};
+  const judgePromptText = responseId
+    ? buildJudgePrompt(task.prompt, selectedResponse?.text || "", task.rubric)
+    : "";
+
+  return (
+    <div>
+      {/* Mode badge */}
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16}}>
+        <div style={{display:"inline-flex",alignItems:"center",gap:6,
+          background: live ? "#f0fdf4" : "#fffbeb",
+          border:`1.5px solid ${live?"#86efac":"#fcd34d"}`,borderRadius:20,
+          padding:"4px 12px",fontFamily:"'Nunito'",fontSize:11,fontWeight:700,
+          color: live ? "#16a34a" : "#b45309"}}>
+          {live ? "🟢 Live mode — real LLM" : "🔵 Simulation mode"}
+        </div>
+        {!live && <span style={{fontFamily:"'Nunito'",fontSize:11,color:"#94a3b8"}}>Add API key in Settings for live judging</span>}
+        {live && <span style={{fontFamily:"'Nunito'",fontSize:11,color:"#94a3b8"}}>Using {settings.provider} · {settings.provider==="ollama" ? settings.ollamaModel : (settings.model || "default model")}</span>}
+      </div>
+
+      {/* Task selector */}
+      <div style={{marginBottom:16}}>
+        <div style={{fontFamily:"'Nunito'",fontSize:10,fontWeight:700,color:"#6366f1",
+          textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>1 · Choose a task</div>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          {TASKS.map(t => (
+            <button key={t.id} onClick={() => handleTaskChange(t.id)} style={{
+              background:taskId===t.id?"#e0e7ff":"white",
+              border:`${taskId===t.id?2:1.5}px solid ${taskId===t.id?"#a5b4fc":"#e2e8f0"}`,
+              borderRadius:10,padding:"8px 14px",cursor:"pointer",fontFamily:"'Nunito'",
+              fontSize:12,fontWeight:600,color:taskId===t.id?"#6366f1":"#64748b",transition:"all .18s"}}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Response selector */}
+      <div style={{marginBottom:14}}>
+        <div style={{fontFamily:"'Nunito'",fontSize:10,fontWeight:700,color:"#6366f1",
+          textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>2 · Pick a response to evaluate</div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10}}>
+          {task.responses.map(r => {
+            const qc = qualityColor[r.quality]; const qp = qualityPale[r.quality];
+            const active = responseId===r.id;
+            return (
+              <button key={r.id} onClick={() => {setResponseId(r.id); setResult(null); setError(null);}} style={{
+                background:active?qp:"white",
+                border:`${active?2:1.5}px solid ${active?qc+"80":"#e2e8f0"}`,
+                borderRadius:12,padding:"10px 12px",cursor:"pointer",textAlign:"left",
+                transition:"all .18s",boxShadow:active?`0 0 0 2px ${qc}22`:"none"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                  <span style={{fontFamily:"'Nunito'",fontSize:12,fontWeight:700,color:"#1e293b"}}>{r.label}</span>
+                  <span style={{fontFamily:"'Nunito'",fontSize:10,fontWeight:700,color:qc,
+                    background:qp,borderRadius:20,padding:"2px 8px",border:`1px solid ${qc}50`}}>{r.badge}</span>
+                </div>
+                <div style={{fontFamily:"'Nunito'",fontSize:11,color:"#64748b",lineHeight:1.5,
+                  display:"-webkit-box",WebkitLineClamp:3,WebkitBoxOrient:"vertical",
+                  overflow:"hidden",whiteSpace:"pre-wrap"}}>{r.text}</div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Prompt preview */}
+      {responseId && (
+        <div style={{marginBottom:12}}>
+          <button onClick={() => setShowPrompt(p=>!p)} style={{background:"transparent",border:"none",
+            cursor:"pointer",fontFamily:"'Nunito'",fontSize:11,fontWeight:600,color:"#6366f1",
+            display:"flex",alignItems:"center",gap:5,padding:0}}>
+            <span>{showPrompt?"▾":"▸"}</span> {showPrompt?"Hide":"Show"} judge prompt
+          </button>
+          {showPrompt && (
+            <div className="slide" style={{marginTop:8,background:"#1e293b",borderRadius:10,
+              padding:"14px 16px",fontFamily:"'Courier New',monospace",fontSize:11,
+              color:"#e2e8f0",lineHeight:1.7,whiteSpace:"pre-wrap",wordBreak:"break-word"}}>
+              {judgePromptText}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Judge button */}
+      <button onClick={handleJudge} disabled={!responseId||judging} style={{
+        background:responseId&&!judging?"linear-gradient(135deg,#6366f1,#0d9488)":"#e2e8f0",
+        border:"none",borderRadius:10,padding:"11px 24px",
+        fontFamily:"'Nunito'",fontSize:13,fontWeight:700,
+        color:responseId&&!judging?"white":"#94a3b8",
+        cursor:responseId&&!judging?"pointer":"not-allowed",
+        transition:"all .2s",marginBottom:14,display:"flex",alignItems:"center",gap:8}}>
+        {judging ? <><span className="spin">⚙</span> {live?"Calling LLM…":"Judging…"}</> : <>⚖ Judge this response</>}
+      </button>
+
+      {judging && (
+        <div style={{background:"#e0e7ff",border:"1.5px solid #a5b4fc",borderRadius:12,
+          padding:"14px 16px",marginBottom:14}}>
+          {(live
+            ? ["Sending prompt to LLM…","Waiting for judge response…","Parsing scores…"]
+            : ["Parsing rubric criteria…","Evaluating accuracy…","Computing scores…"]
+          ).map((s,i) => (
+            <div key={s} className="pulse" style={{fontFamily:"'Nunito'",fontSize:12,color:"#6366f1",
+              marginBottom:4,animationDelay:`${i*0.4}s`,lineHeight:1.5}}>◦ {s}</div>
+          ))}
+        </div>
+      )}
+
+      {/* Error */}
+      {error && (
+        <div className="slide" style={{background:"#fff5f7",border:"1.5px solid #fda4af",
+          borderRadius:12,padding:"12px 16px",marginBottom:14}}>
+          <div style={{fontFamily:"'Nunito'",fontSize:11,fontWeight:700,color:"#be123c",marginBottom:4}}>
+            ✗ Error calling LLM
+          </div>
+          <div style={{fontFamily:"'Courier New',monospace",fontSize:11,color:"#475569",
+            whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{error}</div>
+        </div>
+      )}
+
+      {/* Results */}
+      {result && (
+        <div ref={resultRef} className="slide">
+          <div style={{background:"white",border:"1.5px solid #e2e8f0",borderRadius:14,padding:"18px"}}>
+            {liveMode && live && (
+              <div style={{background:"#f0fdf4",border:"1px solid #86efac",borderRadius:8,
+                padding:"5px 10px",marginBottom:12,display:"inline-flex",alignItems:"center",gap:5,
+                fontFamily:"'Nunito'",fontSize:11,fontWeight:600,color:"#16a34a"}}>
+                🟢 Live LLM response
+              </div>
+            )}
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+              <div style={{fontFamily:"'Cormorant Garamond'",fontStyle:"italic",fontSize:18,fontWeight:600,color:"#1e293b"}}>
+                Judge Verdict
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:10}}>
+                <div style={{fontFamily:"'Cormorant Garamond'",fontSize:28,fontWeight:700,color:"#6366f1"}}>
+                  {typeof result.overall === "number" ? result.overall.toFixed(2) : result.overall}
+                  <span style={{fontSize:14,color:"#94a3b8",fontFamily:"'Nunito'",fontWeight:400}}>/5</span>
+                </div>
+                <VerdictBadge verdict={result.verdict}/>
+              </div>
+            </div>
+            <div style={{marginBottom:14}}>
+              <div style={{fontFamily:"'Nunito'",fontSize:10,fontWeight:700,textTransform:"uppercase",
+                letterSpacing:"0.07em",color:"#6366f1",marginBottom:8}}>Dimension Scores</div>
+              {task.rubric.map((dim,i) => (
+                <div key={dim} style={{display:"flex",alignItems:"center",gap:10,marginBottom:7}}>
+                  <div style={{fontFamily:"'Nunito'",fontSize:12,fontWeight:600,color:"#475569",width:110,flexShrink:0}}>{dim}</div>
+                  <ScoreBar score={result.scores[i]} color="#6366f1"/>
+                  <div style={{fontFamily:"'Cormorant Garamond'",fontSize:16,fontWeight:700,
+                    color:"#6366f1",width:20,textAlign:"right",flexShrink:0}}>{result.scores[i]}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{background:"#f8fafc",borderRadius:10,padding:"12px 14px",borderLeft:"4px solid #6366f1"}}>
+              <div style={{fontFamily:"'Nunito'",fontSize:10,fontWeight:700,color:"#6366f1",
+                textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:6}}>Reasoning</div>
+              <div style={{fontFamily:"'Cormorant Garamond'",fontStyle:"italic",fontSize:14,
+                color:"#1e293b",lineHeight:1.7}}>"{result.reasoning}"</div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Verifier Tab ── */
+function VerifierTab({ settings }) {
+  const [selected,   setSelected]   = useState("factual");
+  const [verifying,  setVerifying]  = useState(false);
+  const [result,     setResult]     = useState(null);
+  const [error,      setError]      = useState(null);
+  const [showPrompt, setShowPrompt] = useState(false);
+  const [liveMode,   setLiveMode]   = useState(false);
+  const resultRef = useRef(null);
+
+  const ex   = VERIFIER_EXAMPLES.find(e => e.id === selected);
+  const live = isLiveMode(settings);
+
+  function handleSelect(id) { setSelected(id); setResult(null); setError(null); setShowPrompt(false); setLiveMode(false); }
+
+  async function handleVerify() {
+    setVerifying(true); setResult(null); setError(null);
+    try {
+      if (live) {
+        setLiveMode(true);
+        const prompt = buildVerifierPrompt(ex.claim, ex.domain, ex.extra);
+        const raw = await callLLM(settings, prompt);
+        setResult(safeParseJSON(raw));
+      } else {
+        await new Promise(r => setTimeout(r, 1500));
+        setResult(ex.simResult);
+      }
+    } catch(err) {
+      setError(err.message);
+    } finally {
+      setVerifying(false);
+      setTimeout(() => resultRef.current?.scrollIntoView({behavior:"smooth",block:"nearest"}), 80);
+    }
+  }
+
+  const verifyPromptText = buildVerifierPrompt(ex.claim, ex.domain, ex.extra);
+
+  return (
+    <div>
+      {/* Mode badge */}
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16}}>
+        <div style={{display:"inline-flex",alignItems:"center",gap:6,
+          background:live?"#f0fdf4":"#fffbeb",
+          border:`1.5px solid ${live?"#86efac":"#fcd34d"}`,borderRadius:20,
+          padding:"4px 12px",fontFamily:"'Nunito'",fontSize:11,fontWeight:700,
+          color:live?"#16a34a":"#b45309"}}>
+          {live?"🟢 Live mode — real LLM":"🔵 Simulation mode"}
+        </div>
+        {!live && <span style={{fontFamily:"'Nunito'",fontSize:11,color:"#94a3b8"}}>Add API key in Settings for live verification</span>}
+      </div>
+
+      {/* Type selector */}
+      <div style={{marginBottom:16}}>
+        <div style={{fontFamily:"'Nunito'",fontSize:10,fontWeight:700,color:"#0d9488",
+          textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>1 · Choose a claim type</div>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          {VERIFIER_EXAMPLES.map(e => (
+            <button key={e.id} onClick={() => handleSelect(e.id)} style={{
+              background:selected===e.id?e.pale:"white",
+              border:`${selected===e.id?2:1.5}px solid ${selected===e.id?e.border:"#e2e8f0"}`,
+              borderRadius:10,padding:"8px 14px",cursor:"pointer",fontFamily:"'Nunito'",fontSize:12,
+              fontWeight:600,color:selected===e.id?e.color:"#64748b",transition:"all .18s",
+              display:"flex",alignItems:"center",gap:6}}>
+              {e.icon} {e.type}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Claim */}
+      <div style={{marginBottom:14}}>
+        <div style={{fontFamily:"'Nunito'",fontSize:10,fontWeight:700,color:"#0d9488",
+          textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>2 · Claim to verify</div>
+        <div style={{background:ex.pale,border:`1.5px solid ${ex.border}`,borderRadius:12,padding:"14px 16px"}}>
+          <div style={{fontFamily:"'Cormorant Garamond'",fontStyle:"italic",fontSize:15,
+            color:"#1e293b",lineHeight:1.7,whiteSpace:"pre-wrap"}}>"{ex.claim}"</div>
+        </div>
+      </div>
+
+      {/* Prompt preview */}
+      <div style={{marginBottom:14}}>
+        <button onClick={() => setShowPrompt(p=>!p)} style={{background:"transparent",border:"none",
+          cursor:"pointer",fontFamily:"'Nunito'",fontSize:11,fontWeight:600,color:ex.color,
+          display:"flex",alignItems:"center",gap:5,padding:0}}>
+          <span>{showPrompt?"▾":"▸"}</span> {showPrompt?"Hide":"Show"} verification prompt
+        </button>
+        {showPrompt && (
+          <div className="slide" style={{marginTop:8,background:"#1e293b",borderRadius:10,
+            padding:"14px 16px",fontFamily:"'Courier New',monospace",fontSize:11,
+            color:"#e2e8f0",lineHeight:1.7,whiteSpace:"pre-wrap",wordBreak:"break-word"}}>
+            {verifyPromptText}
+          </div>
+        )}
+      </div>
+
+      {/* Verify button */}
+      <button onClick={handleVerify} disabled={verifying} style={{
+        background:!verifying?`linear-gradient(135deg,${ex.color},#6366f1)`:"#e2e8f0",
+        border:"none",borderRadius:10,padding:"11px 24px",
+        fontFamily:"'Nunito'",fontSize:13,fontWeight:700,
+        color:!verifying?"white":"#94a3b8",
+        cursor:!verifying?"pointer":"not-allowed",
+        transition:"all .2s",marginBottom:14,display:"flex",alignItems:"center",gap:8}}>
+        {verifying ? <><span className="spin">⚙</span> {live?"Calling LLM…":"Verifying…"}</> : <>{ex.icon} Verify this claim</>}
+      </button>
+
+      {verifying && (
+        <div style={{background:ex.pale,border:`1.5px solid ${ex.border}`,borderRadius:12,
+          padding:"14px 16px",marginBottom:14}}>
+          {(live
+            ? ["Sending verification prompt…","Waiting for LLM response…","Parsing verdict…"]
+            : ["Parsing claim…","Checking knowledge…","Computing confidence…"]
+          ).map((s,i) => (
+            <div key={s} className="pulse" style={{fontFamily:"'Nunito'",fontSize:12,color:ex.color,
+              marginBottom:4,animationDelay:`${i*0.4}s`,lineHeight:1.5}}>◦ {s}</div>
+          ))}
+        </div>
+      )}
+
+      {error && (
+        <div className="slide" style={{background:"#fff5f7",border:"1.5px solid #fda4af",
+          borderRadius:12,padding:"12px 16px",marginBottom:14}}>
+          <div style={{fontFamily:"'Nunito'",fontSize:11,fontWeight:700,color:"#be123c",marginBottom:4}}>✗ Error</div>
+          <div style={{fontFamily:"'Courier New',monospace",fontSize:11,color:"#475569",
+            whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{error}</div>
+        </div>
+      )}
+
+      {result && (
+        <div ref={resultRef} className="slide">
+          <div style={{background:"white",border:"1.5px solid #e2e8f0",borderRadius:14,padding:"18px"}}>
+            {liveMode && live && (
+              <div style={{background:"#f0fdf4",border:"1px solid #86efac",borderRadius:8,
+                padding:"5px 10px",marginBottom:12,display:"inline-flex",alignItems:"center",gap:5,
+                fontFamily:"'Nunito'",fontSize:11,fontWeight:600,color:"#16a34a"}}>
+                🟢 Live LLM response
+              </div>
+            )}
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+              <div style={{fontFamily:"'Cormorant Garamond'",fontStyle:"italic",fontSize:18,fontWeight:600,color:"#1e293b"}}>
+                Verification Result
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:10}}>
+                <div style={{fontFamily:"'Nunito'",fontSize:11,color:"#94a3b8"}}>
+                  Confidence: <span style={{fontWeight:700,color:"#1e293b"}}>{result.confidence}%</span>
+                </div>
+                <VerdictBadge verdict={result.verdict}/>
+              </div>
+            </div>
+            <div style={{marginBottom:14}}>
+              <div style={{fontFamily:"'Nunito'",fontSize:10,fontWeight:700,textTransform:"uppercase",
+                letterSpacing:"0.07em",color:ex.color,marginBottom:6}}>Confidence</div>
+              <div style={{display:"flex",alignItems:"center",gap:10}}>
+                <ScoreBar score={(result.confidence/100)*5} color={ex.color}/>
+                <span style={{fontFamily:"'Cormorant Garamond'",fontSize:20,fontWeight:700,color:ex.color,flexShrink:0}}>
+                  {result.confidence}%
+                </span>
+              </div>
+            </div>
+            <div style={{background:"#f8fafc",borderRadius:10,padding:"12px 14px",borderLeft:`4px solid ${ex.color}`,marginBottom:result.notes?10:0}}>
+              <div style={{fontFamily:"'Nunito'",fontSize:10,fontWeight:700,textTransform:"uppercase",
+                letterSpacing:"0.07em",color:ex.color,marginBottom:6}}>Reasoning</div>
+              <div style={{fontFamily:"'Cormorant Garamond'",fontStyle:"italic",fontSize:14,
+                color:"#1e293b",lineHeight:1.7}}>"{result.reasoning}"</div>
+            </div>
+            {result.notes && (
+              <div style={{marginTop:8,background:"#f0fdfa",border:"1px solid #5eead4",
+                borderRadius:8,padding:"8px 12px"}}>
+                <span style={{fontFamily:"'Nunito'",fontSize:10,fontWeight:700,color:"#0d9488",
+                  textTransform:"uppercase",letterSpacing:"0.06em"}}>Notes  </span>
+                <span style={{fontFamily:"'Nunito'",fontSize:11,color:"#475569"}}>{result.notes}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Code Tab ── */
+function CodeTab() {
+  const [sub, setSub] = useState("judge");
+  const tabs = [["judge","Judge"],["pairwise","Pairwise"],["verifier","Verifier"],["passk","pass@k"],["tips","Pitfalls"]];
+  return (
+    <div>
+      <div style={{display:"flex",gap:4,marginBottom:18,background:"#eef6f9",borderRadius:10,
+        padding:4,border:"1px solid #e2e8f0",width:"fit-content",flexWrap:"wrap"}}>
+        {tabs.map(([k,l]) => (
+          <button key={k} onClick={() => setSub(k)} style={{
+            background:sub===k?"white":"transparent",border:"none",borderRadius:8,
+            padding:"6px 13px",cursor:"pointer",fontFamily:"'Nunito'",fontSize:12,fontWeight:600,
+            color:sub===k?"#6366f1":"#64748b",
+            boxShadow:sub===k?"0 4px 24px rgba(99,102,241,0.08)":"none",transition:"all .18s"}}>
+            {l}
+          </button>
+        ))}
+      </div>
+      <pre dangerouslySetInnerHTML={{ __html: CODE_SNIPPETS[sub] }}/>
+      <div style={{marginTop:10,fontFamily:"'Nunito'",fontSize:11,color:"#94a3b8",textAlign:"right"}}>
+        Uses the Anthropic Python SDK · pip install anthropic
+      </div>
+    </div>
+  );
+}
+
+/* ── pass@k Tab (interactive sampling demo) ── */
+const PASSK_SCENARIOS = [
+  { id:"math",  label:"MATH-500 (hard)", icon:"🧮", color:"#0d9488", pale:"#f0fdfa", border:"#5eead4",
+    p:0.34, verifier:0.92, wrong:["12","−3","0","42","√2"],
+    desc:"Small reasoning model, hard problem. Low single-shot accuracy but real headroom — the gap pass@k exposes." },
+  { id:"nl2sql", label:"NL2SQL (medium)", icon:"🗄️", color:"#6366f1", pale:"#e0e7ff", border:"#a5b4fc",
+    p:0.58, verifier:0.97, wrong:["wrong JOIN","no GROUP BY","bad filter"],
+    desc:"Text-to-SQL with an execution verifier (≈perfect check). Best-of-N reranking by execution is a cheap accuracy win." },
+  { id:"chat",  label:"Multilingual QA", icon:"💬", color:"#8b5cf6", pale:"#f5f3ff", border:"#c4b5fd",
+    p:0.71, verifier:0.78, wrong:["off-topic","wrong language"],
+    desc:"Factual QA across languages. No clean verifier, so maj@k (self-consistency) stabilises the modal answer." },
+];
+
+function comb(n,k){ if(k<0||k>n) return 0; k=Math.min(k,n-k); let r=1; for(let i=0;i<k;i++) r=r*(n-i)/(i+1); return r; }
+function passAtK(n,c,k){ if(n-c<k) return 1; return 1 - comb(n-c,k)/comb(n,k); }
+
+function PassKTab() {
+  const [scenarioId, setScenarioId] = useState("math");
+  const [n, setN]         = useState(8);
+  const [samples, setSamples] = useState(null);
+  const [drawing, setDrawing] = useState(false);
+  const sc = PASSK_SCENARIOS.find(s => s.id === scenarioId);
+
+  function reset(id){ setScenarioId(id); setSamples(null); }
+
+  function draw(){
+    setDrawing(true); setSamples(null);
+    setTimeout(() => {
+      const out = [];
+      for (let i=0;i<n;i++){
+        const correct = Math.random() < sc.p;
+        const answer  = correct ? "correct" : sc.wrong[Math.floor(Math.random()*sc.wrong.length)];
+        // noisy verifier score: correct samples score higher, but with overlap set by sc.verifier
+        const sep = (sc.verifier - 0.5) * 2;                 // 0..1 separation
+        const base = correct ? 0.5 + 0.5*sep : 0.5 - 0.5*sep;
+        const score = Math.max(0, Math.min(1, base + (Math.random()-0.5)*(1-sep)));
+        out.push({ correct, answer, score });
+      }
+      setSamples(out);
+      setDrawing(false);
+    }, 650);
+  }
+
+  // metrics from the draw
+  let metrics = null;
+  if (samples){
+    const c = samples.filter(s=>s.correct).length;
+    // tally answers for self-consistency
+    const tally = {};
+    samples.forEach(s => { tally[s.answer] = (tally[s.answer]||0)+1; });
+    let mode=null, modeCount=-1, tie=false;
+    Object.entries(tally).forEach(([a,ct]) => {
+      if (ct>modeCount){ mode=a; modeCount=ct; tie=false; }
+      else if (ct===modeCount){ tie=true; }
+    });
+    const majCorrect = (mode==="correct") && !tie;
+    // best-of-n: pick highest verifier score
+    let best = samples[0]; samples.forEach(s => { if (s.score>best.score) best=s; });
+    metrics = {
+      c, n,
+      pass1: c/n,
+      passN: c>0 ? 1 : 0,
+      passNest: passAtK(n,c,n),         // == 1 if c>0
+      maj: majCorrect,
+      best: best.correct,
+      curve: Array.from({length:n}, (_,i)=> passAtK(n,c,i+1)),
+    };
+  }
+
+  const card = (label, ok, sub, color) => (
+    <div style={{flex:1,background:ok?"#f0fdf4":"#fff5f7",border:`1.5px solid ${ok?"#86efac":"#fda4af"}`,
+      borderRadius:12,padding:"12px 14px",textAlign:"center"}}>
+      <div style={{fontFamily:"'Nunito'",fontSize:10,fontWeight:700,textTransform:"uppercase",
+        letterSpacing:"0.06em",color:"#64748b",marginBottom:4}}>{label}</div>
+      <div style={{fontFamily:"'Cormorant Garamond'",fontSize:24,fontWeight:700,
+        color:ok?"#16a34a":"#be123c"}}>{ok?"✓":"✗"}</div>
+      <div style={{fontFamily:"'Nunito'",fontSize:10,color:"#94a3b8",marginTop:2}}>{sub}</div>
+    </div>
+  );
+
+  return (
+    <div>
+      <div style={{fontFamily:"'Cormorant Garamond'",fontStyle:"italic",fontSize:15,
+        color:"#64748b",marginBottom:18,lineHeight:1.7}}>
+        pass@k asks a different question than the judge or verifier: <b>not “is this output good?” but “can the model get it right at all, given k tries?”</b> Draw samples and watch coverage diverge from single-shot accuracy.
+      </div>
+
+      {/* scenario */}
+      <div style={{marginBottom:14}}>
+        <div style={{fontFamily:"'Nunito'",fontSize:10,fontWeight:700,color:"#0d9488",
+          textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>1 · Choose a scenario</div>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          {PASSK_SCENARIOS.map(s => (
+            <button key={s.id} onClick={()=>reset(s.id)} style={{
+              background:scenarioId===s.id?s.pale:"white",
+              border:`${scenarioId===s.id?2:1.5}px solid ${scenarioId===s.id?s.border:"#e2e8f0"}`,
+              borderRadius:10,padding:"8px 14px",cursor:"pointer",fontFamily:"'Nunito'",fontSize:12,
+              fontWeight:600,color:scenarioId===s.id?s.color:"#64748b",display:"flex",alignItems:"center",gap:6}}>
+              {s.icon} {s.label}
+            </button>
+          ))}
+        </div>
+        <div style={{marginTop:8,background:sc.pale,border:`1px solid ${sc.border}`,borderRadius:10,
+          padding:"9px 13px",fontFamily:"'Nunito'",fontSize:12,color:"#475569",lineHeight:1.55}}>
+          {sc.desc} <span style={{color:sc.color,fontWeight:700}}>· per-sample success p ≈ {sc.p} · verifier acc ≈ {sc.verifier}</span>
+        </div>
+      </div>
+
+      {/* n slider + draw */}
+      <div style={{display:"flex",alignItems:"center",gap:16,marginBottom:16,flexWrap:"wrap"}}>
+        <div style={{flex:"1 1 260px"}}>
+          <div style={{fontFamily:"'Nunito'",fontSize:10,fontWeight:700,color:"#0d9488",
+            textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:6}}>2 · Samples to draw — n = {n}</div>
+          <input type="range" min="2" max="20" value={n}
+            onChange={e=>{setN(parseInt(e.target.value)); setSamples(null);}}
+            style={{width:"100%",accentColor:sc.color}}/>
+        </div>
+        <button onClick={draw} disabled={drawing} style={{
+          background:drawing?"#e2e8f0":`linear-gradient(135deg,${sc.color},#6366f1)`,
+          border:"none",borderRadius:10,padding:"11px 22px",fontFamily:"'Nunito'",fontSize:13,
+          fontWeight:700,color:drawing?"#94a3b8":"white",cursor:drawing?"not-allowed":"pointer",
+          display:"flex",alignItems:"center",gap:8}}>
+          {drawing ? <><span className="spin">⚙</span> Sampling…</> : <>🎲 Draw {n} samples</>}
+        </button>
+      </div>
+
+      {/* samples grid */}
+      {samples && (
+        <div className="slide" style={{marginBottom:16}}>
+          <div style={{display:"flex",flexWrap:"wrap",gap:7,marginBottom:6}}>
+            {samples.map((s,i) => (
+              <div key={i} title={`verifier score ${s.score.toFixed(2)}`} style={{
+                minWidth:64,flex:"0 0 auto",background:s.correct?"#f0fdf4":"#fff5f7",
+                border:`1.5px solid ${s.correct?"#86efac":"#fda4af"}`,borderRadius:9,
+                padding:"7px 9px",textAlign:"center"}}>
+                <div style={{fontFamily:"'Nunito'",fontSize:9,color:"#94a3b8",fontWeight:700}}>#{i+1}</div>
+                <div style={{fontFamily:"'Nunito'",fontSize:12,fontWeight:700,
+                  color:s.correct?"#16a34a":"#be123c"}}>{s.correct?"✓ correct":s.answer}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{fontFamily:"'Nunito'",fontSize:11,color:"#94a3b8"}}>
+            {metrics.c} of {metrics.n} samples correct (c = {metrics.c})
+          </div>
+        </div>
+      )}
+
+      {/* metrics */}
+      {samples && (
+        <div className="slide">
+          <div style={{display:"flex",gap:10,marginBottom:14,flexWrap:"wrap"}}>
+            <div style={{flex:1,minWidth:120,background:"#eef6f9",border:"1.5px solid #cbd5e1",
+              borderRadius:12,padding:"12px 14px",textAlign:"center"}}>
+              <div style={{fontFamily:"'Nunito'",fontSize:10,fontWeight:700,textTransform:"uppercase",
+                letterSpacing:"0.06em",color:"#64748b",marginBottom:4}}>pass@1</div>
+              <div style={{fontFamily:"'Cormorant Garamond'",fontSize:24,fontWeight:700,color:"#1e293b"}}>
+                {(metrics.pass1*100).toFixed(0)}%</div>
+              <div style={{fontFamily:"'Nunito'",fontSize:10,color:"#94a3b8",marginTop:2}}>one shot</div>
+            </div>
+            {card("pass@n (oracle)", metrics.passN===1, `any of ${metrics.n} correct`, sc.color)}
+            {card("maj@n (vote)", metrics.maj, "self-consistency", "#6366f1")}
+            {card("Best-of-n", metrics.best, "verifier-reranked", "#8b5cf6")}
+          </div>
+
+          {/* pass@k curve */}
+          <div style={{background:"white",border:"1.5px solid #e2e8f0",borderRadius:14,padding:"16px 18px"}}>
+            <div style={{fontFamily:"'Nunito'",fontSize:10,fontWeight:700,textTransform:"uppercase",
+              letterSpacing:"0.07em",color:"#0d9488",marginBottom:10}}>
+              Unbiased pass@k estimate vs. k &nbsp;·&nbsp; 1 − C(n−c, k) / C(n, k)</div>
+            <div style={{display:"flex",alignItems:"flex-end",gap:5,height:120,paddingBottom:18,position:"relative"}}>
+              {metrics.curve.map((v,i) => (
+                <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",
+                  justifyContent:"flex-end",height:"100%"}}>
+                  <div style={{fontFamily:"'Nunito'",fontSize:9,fontWeight:700,color:"#0d9488",marginBottom:2}}>
+                    {(v*100).toFixed(0)}</div>
+                  <div style={{width:"82%",height:`${v*100}%`,minHeight:2,
+                    background:`linear-gradient(180deg,${sc.color},#6366f1)`,borderRadius:"4px 4px 0 0",
+                    transition:"height .5s cubic-bezier(.4,0,.2,1)"}}/>
+                  <div style={{fontFamily:"'Nunito'",fontSize:9,color:"#94a3b8",position:"absolute",
+                    bottom:0}}>{i+1}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{fontFamily:"'Nunito'",fontSize:11,color:"#64748b",marginTop:6,textAlign:"center"}}>
+              k  (number of attempts) →
+            </div>
+            <div style={{marginTop:10,fontFamily:"'Cormorant Garamond'",fontStyle:"italic",fontSize:13,
+              color:"#475569",lineHeight:1.6,background:"#f8fafc",borderRadius:8,padding:"9px 12px",
+              borderLeft:`4px solid ${sc.color}`}}>
+              The curve is the model’s reachable ceiling. The gap from pass@1 to pass@k is headroom a
+              selection method — majority vote, a verifier reranker, or RL fine-tuning — can convert into real accuracy.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!samples && !drawing && (
+        <div style={{background:"#f8fafc",border:"1.5px solid #e2e8f0",borderRadius:12,
+          padding:"16px 18px",fontFamily:"'Nunito'",fontSize:12,color:"#64748b",lineHeight:1.6}}>
+          Pick a scenario and draw samples. Watch how <b>pass@k</b> (any of k correct) climbs above
+          <b> pass@1</b>, how <b>maj@n</b> needs the correct answer to be the <i>modal</i> one, and how
+          <b> Best-of-n</b> depends on the verifier’s accuracy. Each draw is a fresh random sample — run it a few times.
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── App ── */
+function App() {
+  const [tab,          setTab]          = useState("overview");
+  const [showSettings, setShowSettings] = useState(false);
+  const [settings,     setSettings]     = useState({
+    provider: "openrouter",
+    apiKey: "",
+    model: "",
+    ollamaModel: "llama3.2",
+    ollamaUrl: "http://localhost:11434"
+  });
+
+  const tabs = [["overview","Overview"],["judge","LLM-as-Judge"],["verifier","Verifier"],["passk","pass@k"],["code","Code"]];
+  const live = isLiveMode(settings);
+
+  return (
+    <div style={{minHeight:"100vh",
+      background:"linear-gradient(160deg,#eef2ff 0%,#f0fdfa 50%,#e0f2fe 100%)",
+      padding:"36px 20px",display:"flex",justifyContent:"center",alignItems:"flex-start"}}>
+
+      <div style={{position:"fixed",top:-80,right:-80,width:300,height:300,borderRadius:"50%",
+        background:"radial-gradient(circle,rgba(99,102,241,.12),transparent 70%)",pointerEvents:"none"}}/>
+      <div style={{position:"fixed",bottom:-60,left:-60,width:260,height:260,borderRadius:"50%",
+        background:"radial-gradient(circle,rgba(13,148,136,.12),transparent 70%)",pointerEvents:"none"}}/>
+
+      {showSettings && (
+        <SettingsPanel settings={settings} onSave={setSettings} onClose={() => setShowSettings(false)}/>
+      )}
+
+      <div style={{width:"100%",maxWidth:780,position:"relative"}}>
+
+        {/* Header */}
+        <div className="fu" style={{marginBottom:28}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+            <div style={{display:"flex",alignItems:"center",gap:10}}>
+              <div style={{width:28,height:28,borderRadius:8,
+                background:"linear-gradient(135deg,#6366f1,#0d9488)",
+                display:"flex",alignItems:"center",justifyContent:"center",fontSize:14}}>🔬</div>
+              <span style={{color:"#94a3b8",fontFamily:"'Nunito'",fontSize:11,
+                letterSpacing:"0.15em",textTransform:"uppercase",fontWeight:700}}>
+                LLM Evaluation Patterns
+              </span>
+            </div>
+            {/* Settings button */}
+            <button onClick={() => setShowSettings(true)} style={{
+              background: live ? "#f0fdf4" : "white",
+              border: `1.5px solid ${live ? "#86efac" : "#e2e8f0"}`,
+              borderRadius:10,padding:"6px 14px",cursor:"pointer",
+              fontFamily:"'Nunito'",fontSize:12,fontWeight:600,
+              color: live ? "#16a34a" : "#64748b",
+              display:"flex",alignItems:"center",gap:6,transition:"all .18s"}}>
+              🔑 {live ? `Connected · ${settings.provider}` : "Add API Key"}
+            </button>
+          </div>
+          <h1 style={{color:"#1e293b",fontFamily:"'Cormorant Garamond'",
+            fontSize:36,fontWeight:700,margin:0,lineHeight:1.2}}>
+            Evals,{" "}
+            <span style={{fontStyle:"italic",
+              background:"linear-gradient(90deg,#6366f1,#0d9488)",
+              WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>
+              Demystified
+            </span>
+          </h1>
+          <p style={{color:"#94a3b8",fontFamily:"'Nunito'",fontSize:13,marginTop:10,lineHeight:1.65}}>
+            Interactive walkthrough of LLM-as-a-Judge, Verifier, and pass@k. Works in simulation mode or live with OpenRouter, Gemini, or Ollama.
+          </p>
+        </div>
+
+        {/* Tab bar */}
+        <div className="fu1" style={{display:"flex",gap:3,marginBottom:20,
+          background:"white",borderRadius:12,padding:4,width:"fit-content",
+          border:"1.5px solid #e2e8f0",boxShadow:"0 4px 24px rgba(99,102,241,0.08)",flexWrap:"wrap"}}>
+          {tabs.map(([k,l]) => (
+            <button key={k} onClick={() => setTab(k)} style={{
+              background:tab===k?"#e0e7ff":"transparent",border:"none",
+              boxShadow:tab===k?"inset 0 0 0 1.5px #a5b4fc":"none",
+              borderRadius:8,padding:"8px 18px",cursor:"pointer",fontFamily:"'Nunito'",
+              fontSize:13,fontWeight:600,color:tab===k?"#6366f1":"#64748b",transition:"all .2s"}}>
+              {l}
+            </button>
+          ))}
+        </div>
+
+        {/* Main card */}
+        <div className="fu2" style={{background:"white",border:"1.5px solid #e2e8f0",
+          borderRadius:22,padding:"28px 26px",
+          boxShadow:"0 12px 40px rgba(99,102,241,0.13),0 2px 8px rgba(0,0,0,0.05)"}}>
+          {tab==="overview"  && <OverviewTab/>}
+          {tab==="judge"     && <JudgeTab settings={settings}/>}
+          {tab==="verifier"  && <VerifierTab settings={settings}/>}
+          {tab==="passk"     && <PassKTab/>}
+          {tab==="code"      && <CodeTab/>}
+        </div>
+
+        <p className="fu3" style={{color:"#94a3b8",fontFamily:"'Nunito'",fontSize:11,
+          textAlign:"center",marginTop:16}}>
+          Seminar demo · LLM Evals: Verifier · pass@k · Judge · Supports OpenRouter · Gemini · Ollama · or simulation
+        </p>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
