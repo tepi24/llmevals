@@ -1,0 +1,660 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Verifiers &amp; LLM-as-a-Judge — interactive seminar</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+  :root{
+    --bg:#f4f0e7; --panel:#fdfcf8; --panel2:#f6f2ea; --ink:#2a2620; --muted:#6b6358;
+    --line:#e6e0d2; --accent:#4a50c9; --accent2:#3a7d44; --warn:#9a6700; --bad:#be3c30;
+    --judge:#8250df; --verifier:#0d7d8a; --chip:#efe9dc; --code:#f6f2e9;
+    --radius:14px; --mono:"SFMono-Regular",ui-monospace,"JetBrains Mono",Consolas,monospace;
+    --sans:"Plus Jakarta Sans",ui-rounded,"SF Pro Rounded",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.6;font-size:16px}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  code,kbd{font-family:var(--mono);font-size:.88em}
+  .wrap{display:grid;grid-template-columns:248px 1fr;max-width:1280px;margin:0 auto;min-height:100vh}
+  /* sidebar */
+  nav{position:sticky;top:0;align-self:start;height:100vh;overflow-y:auto;padding:24px 16px;border-right:1px solid var(--line);background:#f6f2e8}
+  nav h1{font-size:15px;margin:0 0 4px;letter-spacing:.2px}
+  nav .sub{color:var(--muted);font-size:12px;margin-bottom:18px}
+  nav ol{list-style:none;margin:0;padding:0;counter-reset:s}
+  nav li{counter-increment:s;margin:2px 0}
+  nav a{display:block;color:var(--muted);font-size:13.5px;padding:7px 10px;border-radius:9px;position:relative}
+  nav a:hover{background:var(--panel);color:var(--ink);text-decoration:none}
+  nav a.active{background:var(--panel2);color:var(--ink)}
+  nav a::before{content:counter(s) ". ";color:var(--accent);opacity:.7;font-variant-numeric:tabular-nums}
+  /* content */
+  main{padding:48px 56px 120px;max-width:900px}
+  header.hero{margin-bottom:40px}
+  .badge{display:inline-block;font-size:12px;color:var(--accent2);border:1px solid var(--line);border-radius:999px;padding:3px 11px;margin-bottom:14px;background:var(--panel)}
+  h1.title{font-size:34px;line-height:1.2;margin:.1em 0 .3em}
+  .lede{color:var(--muted);font-size:18px;max-width:62ch}
+  section{margin:0 0 64px;scroll-margin-top:20px}
+  section>h2{font-size:13px;text-transform:uppercase;letter-spacing:.14em;color:var(--accent);margin:0 0 6px}
+  section>h2+.headline{font-size:26px;margin:0 0 14px;line-height:1.25}
+  p{margin:0 0 16px}
+  .muted{color:var(--muted)}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media(max-width:880px){.wrap{grid-template-columns:1fr}nav{display:none}main{padding:28px 20px 80px}.two{grid-template-columns:1fr}}
+  /* cards / panels */
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:20px 22px;margin:18px 0}
+  .card.tight{padding:16px 18px}
+  .lab{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--line)}
+  .lab .labhdr{display:flex;align-items:center;gap:9px;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:14px}
+  .lab .labhdr .dot{width:8px;height:8px;border-radius:50%;background:var(--accent2);box-shadow:0 0 10px var(--accent2)}
+  label.fld{display:block;font-size:12.5px;color:var(--muted);margin:12px 0 5px;letter-spacing:.02em}
+  textarea,input[type=text]{width:100%;background:var(--code);color:var(--ink);border:1px solid var(--line);border-radius:9px;padding:10px 12px;font-family:var(--mono);font-size:13px;resize:vertical}
+  textarea:focus,input:focus{outline:none;border-color:var(--accent)}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  button{background:var(--accent);color:#ffffff;border:none;border-radius:9px;padding:9px 16px;font-weight:600;font-size:13.5px;cursor:pointer;font-family:var(--sans)}
+  button:hover{filter:brightness(1.08)}
+  button.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
+  button.ghost:hover{background:var(--panel2)}
+  .out{font-family:var(--mono);font-size:13px;background:var(--code);border:1px solid var(--line);border-radius:9px;padding:14px;margin-top:14px;white-space:pre-wrap;overflow-x:auto}
+  /* chips / tags */
+  .tag{display:inline-block;font-size:11.5px;font-weight:600;padding:2px 9px;border-radius:999px;font-family:var(--mono)}
+  .pass{background:rgba(57,208,90,.16);color:var(--accent2)}
+  .fail{background:rgba(255,123,114,.16);color:var(--bad)}
+  .neu{background:var(--chip);color:var(--muted)}
+  .pill-v{color:var(--verifier)} .pill-j{color:var(--judge)}
+  /* code blocks */
+  pre{background:var(--code);border:1px solid var(--line);border-radius:11px;padding:16px 18px;overflow-x:auto;margin:16px 0}
+  pre code{color:#1f2328;font-size:12.8px;line-height:1.55}
+  .k{color:#cf222e}.s{color:#0a3069}.c{color:#6e7781;font-style:italic}.f{color:#8250df}.n{color:#0550ae}
+  /* table */
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:8px 0}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.05em}
+  td.mono,th.mono{font-family:var(--mono)}
+  /* callouts */
+  .note{border-left:3px solid var(--accent);background:var(--panel2);padding:12px 16px;border-radius:0 9px 9px 0;margin:16px 0;font-size:14.5px}
+  .note.warn{border-color:var(--warn)} .note.key{border-color:var(--accent2)}
+  .kbar{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0}
+  .kbar .kv{flex:1;min-width:120px;background:var(--code);border:1px solid var(--line);border-radius:11px;padding:12px 14px}
+  .kbar .kv b{display:block;font-size:22px;font-variant-numeric:tabular-nums}
+  .kbar .kv span{font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+  .slider{display:flex;align-items:center;gap:12px;margin:10px 0}
+  .slider input[type=range]{flex:1}
+  .slider .val{font-family:var(--mono);min-width:42px;text-align:right;color:var(--accent)}
+  .toggle{display:inline-flex;align-items:center;gap:7px;font-size:13px;color:var(--muted);cursor:pointer;user-select:none;margin-right:8px}
+  .barwrap{display:flex;align-items:flex-end;gap:6px;height:110px;margin:14px 0}
+  .barwrap .b{flex:1;background:var(--accent);border-radius:6px 6px 0 0;position:relative;min-height:2px;transition:height .25s}
+  .barwrap .b span{position:absolute;top:-18px;left:0;right:0;text-align:center;font-size:11px;color:var(--muted);font-family:var(--mono)}
+  .barwrap .b small{position:absolute;bottom:-18px;left:0;right:0;text-align:center;font-size:11px;color:var(--muted)}
+  .legend{display:flex;gap:16px;font-size:12.5px;color:var(--muted);margin:8px 0}
+  .legend i{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+  .vbox{border:1px dashed #7fb6c4;border-radius:9px;padding:10px 12px;background:rgba(13,125,138,.06)}
+  .jbox{border:1px dashed #c3b0e8;border-radius:9px;padding:10px 12px;background:rgba(130,80,223,.07)}
+  hr.soft{border:none;border-top:1px solid var(--line);margin:30px 0}
+  .footer{color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding-top:20px}
+  .arrowgrid{display:grid;grid-template-columns:1fr auto 1fr;gap:14px;align-items:center;margin:16px 0}
+  .arrowgrid .stage{background:var(--code);border:1px solid var(--line);border-radius:11px;padding:14px;text-align:center;font-size:13px}
+  .arrowgrid .arrow{color:var(--accent);font-size:22px}
+  details{background:var(--code);border:1px solid var(--line);border-radius:9px;padding:10px 14px;margin:12px 0}
+  summary{cursor:pointer;font-weight:600;font-size:14px}
+  .fnum{color:var(--accent);font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+<a href="index.html" style="position:fixed;top:14px;right:14px;z-index:9999;display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:rgba(255,255,255,.85);backdrop-filter:blur(8px);border:1px solid #c7d2fe;border-radius:999px;color:#4338ca;font-family:'Nunito',sans-serif;font-weight:600;font-size:13px;text-decoration:none;box-shadow:0 2px 10px rgba(99,102,241,.15)">⚡ Live demo →</a>
+<div class="wrap">
+<nav>
+  <h1>Verifiers &amp; LLM&#8209;Judges</h1>
+  <div class="sub">Interactive seminar · reasoning-from-scratch chF/04</div>
+  <ol id="toc">
+    <li><a href="#intro">The two scoring paradigms</a></li>
+    <li><a href="#verifier">Rule-based verifiers</a></li>
+    <li><a href="#selfcons">Self-consistency voting</a></li>
+    <li><a href="#judge">The LLM-as-a-judge loop</a></li>
+    <li><a href="#rubric">Rubric prompt builder</a></li>
+    <li><a href="#parse">Parsing the score</a></li>
+    <li><a href="#bias">Judge biases &amp; failure modes</a></li>
+    <li><a href="#pairwise">Pairwise judging &amp; leaderboards</a></li>
+    <li><a href="#agreement">Validating the judge</a></li>
+    <li><a href="#decide">When to use which</a></li>
+    <li><a href="#code">Run the code</a></li>
+  </ol>
+</nav>
+<main>
+<header class="hero">
+  <span class="badge">Lab seminar · hands-on</span>
+  <h1 class="title">Verifiers &amp; LLM-as-a-Judge</h1>
+  <p class="lede">How do we <em>score</em> a reasoning model's answer? This page walks through both
+  scoring paradigms from <em>Build a Reasoning Model (From Scratch)</em> — rule-based verifiers and
+  the LLM-as-a-judge — with every mechanism wired to a live demo you can poke at. Everything here
+  mirrors the runnable Python in <code>llm_judge_and_verifiers.py</code>.</p>
+</header>
+
+<section id="intro">
+  <h2>01 · Orientation</h2>
+  <div class="headline">Two ways to turn a generation into a number</div>
+  <p>A reasoning model emits free text. To <em>evaluate</em> it we need a scalar — correct/incorrect, a
+  1–5 quality score, or a preference. There are two families of scorer, and most of this seminar is about
+  knowing which one a task calls for and what each one quietly gets wrong.</p>
+
+  <div class="two">
+    <div class="card vbox">
+      <span class="tag pill-v" style="font-family:var(--mono)">VERIFIER</span>
+      <p style="margin-top:10px"><b>Rule-based / programmatic.</b> Extract the final answer, normalize, compare to ground truth. Output is a hard 0/1.</p>
+      <p class="muted" style="font-size:13.5px;margin:0">✓ cheap, deterministic, reproducible, no model bias<br>
+      ✗ needs a checkable answer · brittle to formatting · silent on reasoning quality &amp; partial credit</p>
+    </div>
+    <div class="card jbox">
+      <span class="tag pill-j" style="font-family:var(--mono)">LLM JUDGE</span>
+      <p style="margin-top:10px"><b>Model-based.</b> A (stronger) LLM reads instruction + reference + candidate and emits a score or a preference.</p>
+      <p class="muted" style="font-size:13.5px;margin:0">✓ handles open-ended output, partial credit, style, helpfulness<br>
+      ✗ stochastic · biased (position/verbosity/self) · costs compute · <b>must be validated vs humans</b></p>
+    </div>
+  </div>
+
+  <div class="arrowgrid">
+    <div class="stage"><b>Generation</b><br><span class="muted">"…so x = \boxed{8}."</span></div>
+    <div class="arrow">→</div>
+    <div class="stage"><b>Scorer</b><br><span class="pill-v">verifier</span> <span class="muted">or</span> <span class="pill-j">judge</span></div>
+  </div>
+
+  <div class="note key"><b>The rule of thumb for the whole talk:</b> use a verifier whenever the task admits one
+  (math, multiple choice, code with tests). Reach for a judge only when "correct" isn't mechanically
+  checkable — and even then, anchor it with a reference answer and an explicit rubric. The chF/04 script
+  does exactly this: a verifier defines "right," and the judge grades <em>quality</em> against a reference.</p></div>
+</section>
+
+<section id="verifier">
+  <h2>02 · Rule-based verifiers</h2>
+  <div class="headline">Everything hides behind <code>==</code></div>
+  <p>A verifier is three steps: <b>extract</b> the final answer from the generation, <b>normalize</b> it,
+  then <b>compare</b> to gold. The book ships two flavours: letter-matching for MMLU
+  (grab the first <code>A/B/C/D</code>) and boxed/numeric extraction for MATH-500. Both look trivial — and both
+  produce false negatives the moment formatting drifts. Try to break the grader below.</p>
+
+  <div class="card lab">
+    <div class="labhdr"><span class="dot"></span> Verifier playground · extract → normalize → grade</div>
+    <label class="fld">Model generation (candidate answer)</label>
+    <textarea id="v_gen" rows="3">The total works out to 1{,}000 dollars, so the final answer is \boxed{1000}.</textarea>
+    <div class="row" style="margin-top:10px">
+      <div style="flex:1;min-width:160px">
+        <label class="fld" style="margin-top:0">Reference (gold) answer</label>
+        <input id="v_ref" type="text" value="1000">
+      </div>
+      <div style="min-width:150px">
+        <label class="fld" style="margin-top:0">Extractor</label>
+        <select id="v_mode" style="width:100%;background:var(--code);color:var(--ink);border:1px solid var(--line);border-radius:9px;padding:9px;font-family:var(--mono);font-size:13px">
+          <option value="boxed">boxed / number (MATH-500)</option>
+          <option value="letter">first A/B/C/D (MMLU)</option>
+        </select>
+      </div>
+    </div>
+    <div class="row" style="margin-top:14px"><button onclick="runVerifier()">Grade it ▸</button>
+      <button class="ghost" onclick="vPreset('drift')">load a tricky case</button></div>
+    <div class="out" id="v_out">Press “Grade it” to trace each step.</div>
+  </div>
+
+  <div class="note warn"><b>Why this matters for ML researchers:</b> verifier false-negative rate is a
+  confound in every "accuracy" number you read. A 2–3 pt gap between papers is often a normalization
+  detail (units, <code>$</code>, <code>\frac</code> vs decimal, trailing period), not capability. When you report
+  verifier accuracy, report the extraction rule too.</p></div>
+
+  <details><summary>The extraction + normalization code (JS mirrors the Python)</summary>
+<pre><code><span class="k">function</span> <span class="f">extractBoxedOrNumber</span>(text){
+  <span class="c">// 1) prefer contents of the LAST \boxed{...}</span>
+  <span class="k">const</span> boxed = [...text.matchAll(<span class="s">/\\boxed\{([^{}]*)\}/g</span>)].map(m=&gt;m[<span class="n">1</span>]);
+  <span class="k">if</span>(boxed.length) <span class="k">return</span> <span class="f">normalize</span>(boxed.at(-<span class="n">1</span>));
+  <span class="c">// 2) else fall back to the last number in the text</span>
+  <span class="k">const</span> nums = text.match(<span class="s">/-?\d[\d,]*\.?\d*/g</span>);
+  <span class="k">return</span> nums ? <span class="f">normalize</span>(nums.at(-<span class="n">1</span>)) : <span class="k">null</span>;
+}
+<span class="k">function</span> <span class="f">normalize</span>(s){            <span class="c">// strip $ , \  and trailing '.', fold 1000.0-&gt;1000</span>
+  s = s.trim().replace(<span class="s">/\$|,|\\/g</span>,<span class="s">""</span>).replace(<span class="s">/\.+$/</span>,<span class="s">""</span>);
+  <span class="k">return</span> <span class="f">String</span>(<span class="f">Number</span>(s) || s.toLowerCase());
+}</code></pre></details>
+</section>
+
+<section id="selfcons">
+  <h2>03 · Self-consistency</h2>
+  <div class="headline">Turn a verifier + sampling into accuracy</div>
+  <p>A verifier needs ground truth to <em>score</em> — but you can use it without ground truth to <em>pick</em>
+  an answer. Sample the model <span class="fnum">N</span> times at temperature&nbsp;&gt;&nbsp;0, extract each final answer,
+  and take the majority vote (ch04 <code>self_consistency_math500.py</code>). This is test-time compute converting
+  directly into accuracy: independent reasoning paths tend to agree on the right answer and scatter on wrong ones.</p>
+
+  <div class="card lab">
+    <div class="labhdr"><span class="dot"></span> Self-consistency vote · majority over extracted answers</div>
+    <label class="fld">One sampled generation per line (edit freely)</label>
+    <textarea id="sc_in" rows="6">First approach gives \boxed{42}.
+Re-deriving, I also get \boxed{42}.
+Hmm, I think it is \boxed{43}.
+Cleanest path: \boxed{42}.
+By another method \boxed{40}.</textarea>
+    <div class="row" style="margin-top:12px">
+      <label class="toggle"><input type="checkbox" id="sc_early"> early-stop at strict majority (&gt;N/2)</label>
+      <button onclick="runSC()">Tally votes ▸</button>
+    </div>
+    <div id="sc_bars" class="barwrap"></div>
+    <div class="out" id="sc_out">Each line is one model sample; we extract its boxed answer and vote.</div>
+  </div>
+  <p class="muted" style="font-size:14px">Intuition for the seminar: if each independent sample is right with
+  probability <span class="fnum">p &gt; 0.5</span>, majority vote over N samples concentrates toward correct as N grows
+  (a Condorcet-jury effect). The win comes <em>for free</em> from a verifier you already have — no judge, no extra labels.</p>
+</section>
+
+<section id="judge">
+  <h2>04 · The judge loop</h2>
+  <div class="headline">What <code>ollama-judge.py</code> actually does</div>
+  <p>When answers are open-ended, swap the verifier for a judge model. The chF/04 script pits a local Qwen3
+  (base vs reasoning) against MATH-500, then has <code>gpt-oss:20b</code> grade each answer 1–5 against a rubric and a
+  reference. Strip away the infrastructure and the loop is five steps:</p>
+
+  <div class="card">
+    <table>
+      <tr><th style="width:34px">#</th><th>step</th><th>code</th></tr>
+      <tr><td class="fnum">1</td><td>Build candidate answer from the model under test</td><td class="mono muted">generate_with_qwen3()</td></tr>
+      <tr><td class="fnum">2</td><td>Assemble rubric prompt: instruction + reference + answer</td><td class="mono muted">rubric_prompt()</td></tr>
+      <tr><td class="fnum">3</td><td>Send to judge (temp 0, fixed seed) via Ollama</td><td class="mono muted">query_model()</td></tr>
+      <tr><td class="fnum">4</td><td>Parse a 1–5 integer out of the judge's text</td><td class="mono muted">parse_score()</td></tr>
+      <tr><td class="fnum">5</td><td>Aggregate: average score + count distribution</td><td class="mono muted">score_counts</td></tr>
+    </table>
+  </div>
+
+  <div class="note"><b>Design decisions baked into that loop</b> — each is a knob worth discussing:
+  the judge runs at <b>temperature 0 + fixed seed</b> for reproducibility; the prompt supplies a
+  <b>reference answer</b> to anchor grading; the rubric is <b>1–5, not 1–10</b> (lower variance); and the
+  candidate and judge are <b>different model families</b> to blunt self-preference bias.</p></div>
+
+  <p>The book's own run shows the headline result: the <em>reasoning</em> variant beats the <em>base</em> model
+  under the same judge — average <span class="fnum">4.30</span> vs <span class="fnum">3.80</span> over 10 MATH-500
+  items. The judge is the measuring instrument; the next sections are about trusting it.</p>
+  <div class="kbar">
+    <div class="kv"><b>3.80</b><span>base · avg 1–5</span></div>
+    <div class="kv"><b>4.30</b><span>reasoning · avg 1–5</span></div>
+    <div class="kv"><b>1–5</b><span>rubric scale</span></div>
+    <div class="kv"><b>T=0</b><span>judge sampling</span></div>
+  </div>
+</section>
+
+<section id="rubric">
+  <h2>05 · Prompt construction</h2>
+  <div class="headline">The rubric prompt, assembled live</div>
+  <p>The judge is only as good as its prompt. Edit the three inputs and watch the exact string that gets
+  sent to the model assemble below — verbatim structure from <code>rubric_prompt()</code>. The mock score is a
+  stand-in heuristic (lexical overlap with the reference → 1–5) so you can iterate without a GPU; a real judge
+  reasons over the rubric instead.</p>
+
+  <div class="card lab">
+    <div class="labhdr"><span class="dot"></span> rubric_prompt() builder</div>
+    <label class="fld">Instruction</label>
+    <textarea id="r_inst" rows="2">A triangle has angles 40° and 75°. Find the third angle.</textarea>
+    <div class="two">
+      <div><label class="fld">Reference answer</label><textarea id="r_ref" rows="2">65 degrees</textarea></div>
+      <div><label class="fld">Candidate answer (model under test)</label><textarea id="r_ans" rows="2">Angles sum to 180, so 180-40-75 = 65 degrees.</textarea></div>
+    </div>
+    <div class="row" style="margin-top:12px"><button onclick="runRubric()">Assemble &amp; score ▸</button></div>
+    <div class="row" style="margin-top:14px;align-items:stretch;gap:14px">
+      <div style="flex:2;min-width:240px"><label class="fld" style="margin-top:0">Prompt sent to judge</label><div class="out" id="r_prompt" style="margin-top:5px;max-height:300px;overflow:auto"></div></div>
+      <div style="flex:1;min-width:150px"><label class="fld" style="margin-top:0">Judge output</label><div class="out" id="r_score" style="margin-top:5px"></div></div>
+    </div>
+  </div>
+
+  <div class="note key"><b>Why a reference answer + bounded scale.</b> Without a reference, the judge silently
+  re-derives "correct" and grades against its own (possibly wrong) belief — disastrous on hard math. A bounded
+  1–5 anchored rubric makes scores comparable across items and across runs, which is what lets you average them.</p></div>
+</section>
+
+<section id="parse">
+  <h2>06 · Output parsing</h2>
+  <div class="headline">Getting a number back out is its own failure mode</div>
+  <p>The judge returns prose. <code>parse_score()</code> grabs the first digit 1–5 followed by a non-digit:
+  <code>re.search(r"([1-5])(?:\D|$)", text)</code>. Simple — and exactly where silent corruption creeps in. If the
+  judge restates the rubric ("on a scale of 1 to 5…"), writes "10/10", or leads with the year, the regex latches
+  onto the wrong token. Paste judge text and watch what the parser extracts.</p>
+
+  <div class="card lab">
+    <div class="labhdr"><span class="dot"></span> parse_score() inspector</div>
+    <label class="fld">Raw judge response</label>
+    <textarea id="p_in" rows="3">On a scale of 1 to 5, I would rate this response a 4 because it is mostly correct.</textarea>
+    <div class="row" style="margin-top:12px">
+      <button onclick="runParse()">Parse ▸</button>
+      <button class="ghost" onclick="pPreset(0)">clean case</button>
+      <button class="ghost" onclick="pPreset(1)">rubric-echo trap</button>
+      <button class="ghost" onclick="pPreset(2)">"10/10" trap</button>
+    </div>
+    <div class="out" id="p_out"></div>
+  </div>
+  <div class="note warn"><b>Robust alternatives</b> to discuss: constrain the judge to reply in a fixed schema
+  (JSON <code>{"score": n}</code>), use a grammar/structured-decoding constraint, or read the model's logprobs over
+  the tokens "1".."5" instead of sampling free text. The book keeps the regex for simplicity — know its blast radius.</p></div>
+</section>
+
+<section id="bias">
+  <h2>07 · Failure modes</h2>
+  <div class="headline">A judge is a biased instrument</div>
+  <p>Because the judge is itself an LLM, it carries systematic biases. Three are robust enough to measure in a
+  seminar demo. The pairwise sandbox below uses a deliberately <b>verbosity-biased</b> mock judge (it prefers the
+  longer answer) so you can <em>see</em> position bias by swapping the slot order.</p>
+
+  <div class="two">
+    <div class="card tight"><b class="pill-j">Position bias</b><p class="muted" style="font-size:13.5px;margin:6px 0 0">The same content scores differently as "A" vs "B". Detect by running both orderings and checking for flips.</p></div>
+    <div class="card tight"><b class="pill-j">Verbosity bias</b><p class="muted" style="font-size:13.5px;margin:6px 0 0">Longer, more confident answers get higher scores independent of correctness. Length is a confound.</p></div>
+  </div>
+  <div class="card tight" style="margin-top:0"><b class="pill-j">Self-preference / familiarity bias</b><p class="muted" style="font-size:13.5px;margin:6px 0 0">A judge rates outputs from its own model family higher — which is why chF/04 uses a different family (gpt-oss) to judge Qwen3.</p></div>
+
+  <div class="card lab">
+    <div class="labhdr"><span class="dot"></span> Position-bias probe · same two answers, both orderings</div>
+    <label class="fld">Answer X (short)</label>
+    <textarea id="b_short" rows="2">Rayleigh scattering: air scatters short (blue) wavelengths more than red.</textarea>
+    <label class="fld">Answer Y (long)</label>
+    <textarea id="b_long" rows="3">Sunlight contains all colors; as it crosses the atmosphere, gas molecules scatter shorter wavelengths far more strongly (∝ 1/λ⁴), so blue light is redirected across the sky and reaches our eyes from every direction — which is why the daytime sky looks blue.</textarea>
+    <div class="row" style="margin-top:12px"><button onclick="runBias()">Judge both orders ▸</button></div>
+    <div class="out" id="b_out"></div>
+  </div>
+  <div class="note"><b>Mitigations</b> (good discussion prompt): randomize or average over orderings; calibrate
+  for length; use multiple judges and aggregate; few-shot the judge with anchored examples; and always report a
+  human-agreement number alongside any judge-derived metric.</div>
+</section>
+
+<section id="pairwise">
+  <h2>08 · Pairwise &amp; leaderboards</h2>
+  <div class="headline">From A-vs-B verdicts to a ranking</div>
+  <p>Pairwise judging ("which answer is better?") is more reliable than absolute scoring and is what powers
+  Chatbot-Arena-style leaderboards (chF/03). Collect many pairwise verdicts, then fit a latent strength per model.
+  The book shows two fits: <b>Elo</b> (online update) and <b>Bradley-Terry</b> (maximum-likelihood). Below, enter a
+  win matrix and compute Bradley-Terry strengths.</p>
+
+  <div class="card lab">
+    <div class="labhdr"><span class="dot"></span> Bradley-Terry from a win matrix</div>
+    <p class="muted" style="font-size:13px;margin:0 0 8px">Cell (row, col) = times <b>row model</b> beat <b>col model</b>. Edit the wins; diagonal ignored.</p>
+    <div id="bt_grid"></div>
+    <div class="row" style="margin-top:12px"><button onclick="runBT()">Fit Bradley-Terry ▸</button>
+      <button class="ghost" onclick="btReset()">reset example</button></div>
+    <div class="out" id="bt_out"></div>
+  </div>
+  <p class="muted" style="font-size:14px">Bradley-Terry models <span class="fnum">P(i beats j) = πᵢ/(πᵢ+πⱼ)</span>
+  and fits the strengths <span class="fnum">π</span> by MLE (iterative). Elo is essentially its online
+  stochastic-gradient cousin. Either way, the <em>input</em> is pairwise judge verdicts — so leaderboard quality is
+  bounded by judge quality, which brings us to validation.</p>
+</section>
+
+<section id="agreement">
+  <h2>09 · Validation</h2>
+  <div class="headline">An unvalidated judge is a vibe, not a metric</div>
+  <p>Before trusting judge scores, measure how well they agree with ground truth (a verifier, where one exists) or
+  with human labels. Two standard checks: <b>accuracy</b> of the judge's pass/fail vs gold, and <b>Cohen's κ</b> for
+  chance-corrected agreement. Toggle each item's gold label and the judge's verdict to see κ respond.</p>
+
+  <div class="card lab">
+    <div class="labhdr"><span class="dot"></span> Judge ↔ gold agreement · Cohen's κ</div>
+    <div id="ag_rows"></div>
+    <div class="kbar" style="margin-top:16px">
+      <div class="kv"><b id="ag_acc">–</b><span>judge accuracy</span></div>
+      <div class="kv"><b id="ag_kappa">–</b><span>Cohen's κ</span></div>
+      <div class="kv"><b id="ag_po">–</b><span>observed agree</span></div>
+      <div class="kv"><b id="ag_pe">–</b><span>chance agree</span></div>
+    </div>
+    <div class="out" id="ag_out" style="margin-top:4px"></div>
+  </div>
+  <div class="note key"><b>Reading κ like a referee:</b> κ ≈ 1 perfect, ≈ 0 no better than chance, &lt; 0 worse
+  than chance. For LLM-judge work, people usually want κ vs humans in the "substantial" band (≈ 0.6–0.8) before
+  reporting judge scores as a proxy for human preference. Always publish the κ next to the score.</p></div>
+</section>
+
+<section id="decide">
+  <h2>10 · Decision guide</h2>
+  <div class="headline">Which scorer for which task?</div>
+  <table>
+    <tr><th>Task</th><th>Default scorer</th><th>Why</th></tr>
+    <tr><td>Multiple choice (MMLU)</td><td><span class="tag pass">verifier</span> letter-match</td><td>Exact gold exists; judge would only add noise &amp; cost.</td></tr>
+    <tr><td>Math with final answer (MATH-500)</td><td><span class="tag pass">verifier</span> + self-consistency</td><td>Checkable; sampling+vote buys accuracy free.</td></tr>
+    <tr><td>Code generation</td><td><span class="tag pass">verifier</span> unit tests</td><td>Execution is ground truth; judges miss subtle bugs.</td></tr>
+    <tr><td>Open-ended QA / explanations</td><td><span class="tag neu" style="color:var(--judge)">judge</span> rubric + reference</td><td>No mechanical "correct"; need partial credit &amp; quality.</td></tr>
+    <tr><td>Ranking many models</td><td><span class="tag neu" style="color:var(--judge)">judge</span> pairwise → Elo/BT</td><td>Pairwise is reliable; fits a leaderboard.</td></tr>
+    <tr><td>RL reward signal</td><td><span class="tag pass">verifier</span> if possible, else <span class="tag neu" style="color:var(--judge)">judge</span></td><td>Verifiers are gameable-resistant; judge rewards can be hacked.</td></tr>
+  </table>
+  <div class="note"><b>Hybrid is the norm in practice.</b> chF/04 uses both at once: a verifier-style reference
+  defines the right answer, and the judge grades quality against it. Use the verifier for the hard correctness
+  gate; use the judge for the graded, open-ended layer on top — and validate the judge against the verifier
+  wherever they overlap.</div>
+</section>
+
+<section id="code">
+  <h2>11 · Hands-on</h2>
+  <div class="headline">Run it yourself</div>
+  <p>Every demo on this page mirrors <code>llm_judge_and_verifiers.py</code> (saved alongside this file). It runs
+  with <b>zero dependencies</b> in mock mode, or against a real judge via Ollama — same wire format as the book's
+  <code>ollama-judge.py</code>.</p>
+<pre><code><span class="c"># 1) no dependencies — deterministic mock judge, full pipeline</span>
+python llm_judge_and_verifiers.py
+
+<span class="c"># 2) against a real judge (needs: ollama serve + a pulled model)</span>
+pip install requests
+ollama pull gpt-oss:20b
+python llm_judge_and_verifiers.py --backend ollama --judge_model gpt-oss:20b
+
+<span class="c"># 3) the book's original end-to-end script (needs Qwen3 ckpt + torch)</span>
+uv run ollama-judge.py --which_model reasoning --dataset_size 10</code></pre>
+  <p class="muted" style="font-size:14px">The script prints a per-example table (verifier vs judge vs gold), the
+  self-consistency tally, agreement metrics (accuracy + Cohen's κ), and a position-bias flip rate — the same
+  quantities you just explored interactively. Each <code>PART</code> in the source maps to a section above.</p>
+
+  <div class="footer">
+    <p>Source: Sebastian Raschka, <em>Build a Reasoning Model (From Scratch)</em> —
+    <a href="https://github.com/rasbt/reasoning-from-scratch/tree/main/chF/04_llm-judge" target="_blank" rel="noopener">chF/04_llm-judge</a>,
+    with material from chF/02 (MMLU verifiers), ch04 (self-consistency) and chF/03 (Elo / Bradley-Terry).
+    Built as seminar material for the AIC lab. Interactive demos are pedagogical mocks, not the book's measured results.</p>
+  </div>
+</section>
+</main>
+</div>
+<script>
+/* ============ shared helpers (mirror the Python logic) ============ */
+const $=(s,r=document)=>r.querySelector(s);
+const $$=(s,r=document)=>[...r.querySelectorAll(s)];
+function tokenize(s){return (s.toLowerCase().match(/[a-z0-9]+/g)||[]);}
+function normalize(s){
+  s=(s||"").trim().replace(/\$/g,"").replace(/,/g,"").replace(/\\/g,"").replace(/\.+$/,"").trim();
+  const f=parseFloat(s);
+  if(!isNaN(f)&&isFinite(f)&&String(f)!=="")
+    {if(/^-?\d*\.?\d+$/.test(s))return Number.isInteger(f)?String(f):String(f);}
+  return s.toLowerCase();
+}
+function extractBoxedOrNumber(text){
+  const boxed=[...(text||"").matchAll(/\\boxed\{([^{}]*)\}/g)].map(m=>m[1]);
+  if(boxed.length)return normalize(boxed[boxed.length-1]);
+  const nums=(text||"").match(/-?\d[\d,]*\.?\d*/g);
+  if(nums)return normalize(nums[nums.length-1]);
+  return null;
+}
+function extractLetter(text){for(const c of (text||"")){const u=c.toUpperCase();if("ABCD".includes(u))return u;}return null;}
+function gradeAnswer(pred,gold){if(pred==null)return false;return normalize(pred)===normalize(String(gold));}
+function parseScore(t,def=3){const m=(t||"").match(/([1-5])(?:\D|$)/);return m?+m[1]:def;}
+function parseVerdict(t){t=(t||"").trim().toLowerCase();if(t.slice(0,8).includes("tie"))return"tie";const m=t.match(/\b([ab])\b/);return m?m[1].toUpperCase():"tie";}
+function cohensKappa(a,b){
+  const n=a.length;if(!n)return 0;
+  let po=0;for(let i=0;i<n;i++)if(a[i]===b[i])po++;po/=n;
+  const cats=new Set([...a,...b]);const ca={},cb={};
+  for(const x of a)ca[x]=(ca[x]||0)+1;for(const y of b)cb[y]=(cb[y]||0)+1;
+  let pe=0;for(const c of cats)pe+=((ca[c]||0)/n)*((cb[c]||0)/n);
+  return pe===1?1:(po-pe)/(1-pe);
+}
+/* a deterministic "mock judge": overlap with reference -> 1..5, verbosity-biased pairwise */
+function mockRubricScore(reference,answer){
+  const r=new Set(tokenize(reference)),a=new Set(tokenize(answer));
+  if(!r.size)return 3;
+  let ov=0;for(const t of r)if(a.has(t))ov++;ov/=r.size;
+  return Math.max(1,Math.min(5,1+Math.round(4*ov)));
+}
+/* scrollspy */
+const obs=new IntersectionObserver((es)=>{es.forEach(e=>{if(e.isIntersecting){
+  $$("#toc a").forEach(x=>x.classList.remove("active"));
+  const l=$('#toc a[href="#'+e.target.id+'"]');if(l)l.classList.add("active");}});},{rootMargin:"-30% 0px -60% 0px"});
+window.addEventListener("DOMContentLoaded",()=>{$$("section[id]").forEach(s=>obs.observe(s));initAll();});
+/* ---------- 02 verifier ---------- */
+function runVerifier(){
+  const gen=$("#v_gen").value, ref=$("#v_ref").value, mode=$("#v_mode").value;
+  let pred, line2;
+  if(mode==="letter"){pred=extractLetter(gen);line2="extractLetter() → first of A/B/C/D";}
+  else{pred=extractBoxedOrNumber(gen);line2="extractBoxedOrNumber() → last \\boxed{} or last number";}
+  const np=pred==null?"(none found)":normalize(pred), nr=normalize(ref);
+  const ok=gradeAnswer(pred,ref);
+  $("#v_out").innerHTML=
+`extract  : ${line2}
+           raw      → ${pred==null?"∅":JSON.stringify(pred)}
+normalize: ${pred==null?"∅":'"'+pred+'"  →  "'+np+'"'}
+reference: "${ref}"  →  "${nr}"
+compare  : normalize(pred) ${np===nr?"==":"≠"} normalize(gold)
+result   : ${ok?'<span class="tag pass">PASS ✓</span>':'<span class="tag fail">fail ✗</span>'}`;
+}
+function vPreset(k){
+  $("#v_gen").value="The two solutions are x=3 and x=-3, so the answer is \\boxed{\\pm 3}.";
+  $("#v_ref").value="3"; $("#v_mode").value="boxed"; runVerifier();
+  $("#v_out").innerHTML+=`\n\n<span style="color:var(--warn)">↑ false negative: the model is right (±3) but the grader\n   normalizes "\\pm 3"→"\\pm 3" ≠ "3". Formatting, not capability.</span>`;
+}
+
+/* ---------- 03 self-consistency ---------- */
+function runSC(){
+  const lines=$("#sc_in").value.split("\n").map(s=>s.trim()).filter(Boolean);
+  const early=$("#sc_early").checked, counts={}; let order=[], stopped=-1;
+  for(let i=0;i<lines.length;i++){
+    const a=extractBoxedOrNumber(lines[i]);
+    if(a==null)continue;
+    counts[a]=(counts[a]||0)+1; order.push(a);
+    if(early && counts[a]>lines.length/2){stopped=i;break;}
+  }
+  const entries=Object.entries(counts).sort((p,q)=>q[1]-p[1]);
+  const winner=entries.length?entries[0][0]:null;
+  const max=Math.max(1,...entries.map(e=>e[1]));
+  $("#sc_bars").innerHTML=entries.map(([k,v])=>
+    `<div class="b" style="height:${Math.round(v/max*100)}%;background:${k===winner?'var(--accent2)':'var(--accent)'}"><span>${v}</span><small>${k}</small></div>`).join("");
+  $("#sc_out").innerHTML=
+`samples processed: ${stopped>=0?stopped+1:lines.length}${stopped>=0?'  (early-stopped at strict majority)':''}
+extracted votes  : ${JSON.stringify(counts)}
+majority winner  : <span class="tag pass">${winner}</span>
+note             : votes scatter on wrong paths, concentrate on the right one.`;
+}
+
+/* ---------- 05 rubric ---------- */
+const RUBRIC_HEAD="You are a fair judge assistant. You will be given an instruction, a reference answer, and a candidate answer to evaluate, according to the following rubric:\n\n1: fails / irrelevant / verbose.\n2: partial, major errors.\n3: partly correct, unclear in places.\n4: mostly correct, minor issues.\n5: clear, accurate, concise.\n\nNow here is the instruction, the reference answer, and the response.\n";
+function buildRubricPrompt(inst,ref,ans){
+  return `${RUBRIC_HEAD}\nInstruction:\n${inst}\n\nReference Answer:\n${ref}\n\nAnswer:\n${ans}\n\nEvaluation: `;
+}
+function runRubric(){
+  const inst=$("#r_inst").value, ref=$("#r_ref").value, ans=$("#r_ans").value;
+  $("#r_prompt").textContent=buildRubricPrompt(inst,ref,ans);
+  const sc=mockRubricScore(ref,ans);
+  const overlap=(()=>{const r=new Set(tokenize(ref)),a=new Set(tokenize(ans));if(!r.size)return 0;let o=0;for(const t of r)if(a.has(t))o++;return o/r.size;})();
+  $("#r_score").innerHTML=`mock score\n  <span class="tag ${sc>=4?'pass':sc<=2?'fail':'neu'}" style="font-size:15px">${sc} / 5</span>\n\nref-overlap: ${(overlap*100).toFixed(0)}%\nparse_score()→ ${sc}\n\n<span style="color:var(--muted)">(real judge reasons\nover the rubric;\nthis mock = overlap)</span>`;
+}
+
+/* ---------- 06 parse ---------- */
+const P_PRESETS=["The response is accurate and concise. Score: 5.",
+  "On a scale of 1 to 5, this earns a 4 for mostly-correct reasoning.",
+  "This is a perfect answer, easily 10/10 — flawless."];
+function pPreset(k){$("#p_in").value=P_PRESETS[k];runParse();}
+function runParse(){
+  const t=$("#p_in").value, m=t.match(/([1-5])(?:\D|$)/), score=m?+m[1]:3;
+  let hl=t;
+  if(m){const idx=m.index;hl=t.slice(0,idx)+'<span style="background:rgba(74,80,201,.20);border-radius:3px;padding:0 2px">'+t.slice(idx,idx+1)+'</span>'+t.slice(idx+1);}
+  const trap=(k=>k.includes("1 to 5")||k.includes("10/10"))(t);
+  $("#p_out").innerHTML=
+`regex   : /([1-5])(?:\\D|$)/
+matched : ${m?'"'+m[1]+'" at index '+m.index:"no match → default 3"}
+text    : ${hl}
+score   : <span class="tag ${score>=4?'pass':score<=2?'fail':'neu'}">${score}</span>${trap?'\n<span style="color:var(--warn)">⚠ the matched digit may be from the rubric/ratio, not the verdict.</span>':''}`;
+}
+
+/* ---------- 07 bias (pairwise, verbosity-biased mock) ---------- */
+function mockPairwise(promptA,promptB){return promptA.length>=promptB.length?"A":"B";}
+function runBias(){
+  const s=$("#b_short").value, l=$("#b_long").value;
+  // verdict with (A=short,B=long) then (A=long,B=short)
+  const v1=mockPairwise(s,l);                 // longer wins -> "B"
+  const v2=mockPairwise(l,s);                 // longer wins -> "A"
+  // remap swapped verdict to content frame: in run2, A=long,B=short
+  const remap={A:"B",B:"A",tie:"tie"};
+  const flipped=v1!==remap[v2];
+  $("#b_out").innerHTML=
+`run 1  (A=short, B=long): judge picks <span class="tag neu">${v1}</span>  →  ${v1==="A"?"short":"long"} answer
+run 2  (A=long,  B=short): judge picks <span class="tag neu">${v2}</span>  →  ${v2==="A"?"long":"short"} answer
+content-consistent?       ${flipped?'<span class="tag fail">NO — verdict flipped with order</span>':'<span class="tag pass">yes</span>'}
+diagnosis               : the mock prefers the LONGER answer regardless of slot →
+                          pure verbosity bias, and it is position-stable here.
+                          (Edit so the SHORT answer is longer to see a flip.)`;
+}
+
+/* ---------- 08 Bradley-Terry ---------- */
+const BT_MODELS=["base","reasoning","instruct"];
+let BT=[[0,3,5],[7,0,6],[5,4,0]];
+function buildBTGrid(){
+  let h='<table><tr><th></th>'+BT_MODELS.map(m=>`<th class="mono">${m}</th>`).join("")+'</tr>';
+  for(let i=0;i<3;i++){h+=`<tr><th class="mono">${BT_MODELS[i]}</th>`;
+    for(let j=0;j<3;j++){h+= i===j?'<td class="muted" style="text-align:center">—</td>':
+      `<td><input type="text" value="${BT[i][j]}" style="width:54px;padding:5px;text-align:center" oninput="BT[${i}][${j}]=+this.value||0"></td>`;}
+    h+='</tr>';}
+  $("#bt_grid").innerHTML=h+'</table>';
+}
+function runBT(){
+  // MLE for Bradley-Terry strengths via iterative (MM) updates
+  let pi=[1,1,1];
+  const W=BT.map(r=>r.reduce((a,b)=>a+b,0)); // total wins per model
+  for(let it=0;it<200;it++){
+    const np=[0,0,0];
+    for(let i=0;i<3;i++){
+      let denom=0;
+      for(let j=0;j<3;j++){if(i===j)continue;const nij=BT[i][j]+BT[j][i];denom+=nij/(pi[i]+pi[j]);}
+      np[i]=W[i]/(denom||1e-9);
+    }
+    const s=np.reduce((a,b)=>a+b,0)/3; for(let i=0;i<3;i++)pi[i]=np[i]/s;
+  }
+  const ranked=BT_MODELS.map((m,i)=>[m,pi[i]]).sort((a,b)=>b[1]-a[1]);
+  const tot=pi.reduce((a,b)=>a+b,0);
+  let out="Bradley-Terry strengths (π, normalized):\n";
+  ranked.forEach((r,k)=>{out+=`  ${k+1}. ${r[0].padEnd(10)} π=${r[1].toFixed(3)}  (P vs avg = ${(r[1]/tot*100).toFixed(0)}%)\n`;});
+  const top=ranked[0],bot=ranked[2];
+  out+=`\nP(${top[0]} beats ${bot[0]}) = π/(π+π) = ${(top[1]/(top[1]+bot[1])*100).toFixed(0)}%`;
+  $("#bt_out").textContent=out;
+}
+function btReset(){BT=[[0,3,5],[7,0,6],[5,4,0]];buildBTGrid();runBT();}
+
+/* ---------- 09 agreement ---------- */
+const AG=[
+  {q:"17 × 23 = ?",gold:true,judge:true},
+  {q:"3rd angle of triangle",gold:true,judge:true},
+  {q:"solve 2x+6=20 (model said 8)",gold:false,judge:false},
+  {q:"5! = ? (unboxed)",gold:true,judge:true},
+  {q:"open-ended explanation",gold:false,judge:true},
+];
+function buildAG(){
+  $("#ag_rows").innerHTML='<table><tr><th>item</th><th style="text-align:center">gold correct?</th><th style="text-align:center">judge says pass?</th></tr>'+
+    AG.map((r,i)=>`<tr><td>${r.q}</td>
+      <td style="text-align:center"><label class="toggle"><input type="checkbox" ${r.gold?'checked':''} onchange="AG[${i}].gold=this.checked;recomputeAG()"> gold</label></td>
+      <td style="text-align:center"><label class="toggle"><input type="checkbox" ${r.judge?'checked':''} onchange="AG[${i}].judge=this.checked;recomputeAG()"> judge</label></td></tr>`).join("")+'</table>';
+}
+function recomputeAG(){
+  const gold=AG.map(r=>r.gold?"P":"F"), judge=AG.map(r=>r.judge?"P":"F");
+  const n=AG.length; let agree=0;for(let i=0;i<n;i++)if(gold[i]===judge[i])agree++;
+  const acc=agree/n, k=cohensKappa(gold,judge);
+  // recompute po/pe for display
+  const cg={},cj={};gold.forEach(x=>cg[x]=(cg[x]||0)+1);judge.forEach(x=>cj[x]=(cj[x]||0)+1);
+  let pe=0;new Set([...gold,...judge]).forEach(c=>pe+=((cg[c]||0)/n)*((cj[c]||0)/n));
+  $("#ag_acc").textContent=(acc*100).toFixed(0)+"%";
+  $("#ag_kappa").textContent=(k>=0?"+":"")+k.toFixed(2);
+  $("#ag_kappa").style.color = k>=0.6?"var(--accent2)":k>=0.2?"var(--warn)":"var(--bad)";
+  $("#ag_po").textContent=acc.toFixed(2);
+  $("#ag_pe").textContent=pe.toFixed(2);
+  const band=k>=0.8?"almost perfect":k>=0.6?"substantial":k>=0.4?"moderate":k>=0.2?"fair":k>0?"slight":"none/worse";
+  $("#ag_out").textContent=`κ = (po − pe)/(1 − pe) = (${acc.toFixed(2)} − ${pe.toFixed(2)})/(1 − ${pe.toFixed(2)}) = ${(k>=0?"+":"")+k.toFixed(2)}  →  "${band}" agreement.\nThe last item (open-ended) is where verifier has no gold and the judge can drift — flip it to watch κ drop.`;
+}
+
+/* ---------- init ---------- */
+function initAll(){
+  runVerifier(); runSC(); runRubric(); runParse(); runBias();
+  buildBTGrid(); runBT(); buildAG(); recomputeAG();
+}
+</script>
+</body>
+</html>
